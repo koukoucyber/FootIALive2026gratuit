@@ -66,9 +66,18 @@ data class AICommentary(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+data class VideoHighlightMarker(
+    val id: String,
+    val minute: Int,
+    val title: String,
+    val type: String, // GOAL, SAVE, CHANCE, FOUL
+    val timestampSeconds: Int,
+    val videoUrl: String? = null
+)
+
 data class Match(
     val id: String,
-    val league: String, // Ligue 1, Premier League, LaLiga, Bundesliga, Serie A, Ligue des Champions, CAN
+    val league: String, // Ligue 1, Premier League, LaLiga, Bundesliga, Serie A, Ligue des Champions, CAN, Euro / Ligue des Nations
     val homeTeam: String,
     val homeTeamLogo: String,
     val awayTeam: String,
@@ -85,7 +94,10 @@ data class Match(
     val events: List<MatchEvent>,
     val lineup: MatchLineup,
     val aiCommentaries: List<AICommentary>,
-    val aiSummary: String? = null
+    val aiSummary: String? = null,
+    val videoStreamUrl: String? = null,
+    val videoThumbnailUrl: String? = null,
+    val videoHighlights: List<VideoHighlightMarker> = emptyList()
 )
 
 data class LeagueStanding(
@@ -123,7 +135,17 @@ data class PlayerProfile(
     val passing: Int,
     val dribbling: Int,
     val defense: Int,
-    val physical: Int
+    val physical: Int,
+    // Statistiques avancées (xG, xA, Passes clés, Duels gagnés, etc.)
+    val expectedGoals: Float = 0f,
+    val expectedAssists: Float = 0f,
+    val keyPasses: Int = 0,
+    val duelsWon: Int = 0,
+    val duelsWonPct: Int = 50,
+    val shotsOnTarget: Int = 0,
+    val successfulDribbles: Int = 0,
+    val recoveries: Int = 0,
+    val minutesPlayed: Int = 0
 )
 
 data class NewsArticle(
@@ -155,3 +177,28 @@ data class FavoriteTeamEntity(
     val logoUrl: String,
     val addedAt: Long = System.currentTimeMillis()
 )
+
+enum class PredictionChoice {
+    HOME_WIN, DRAW, AWAY_WIN
+}
+
+data class UserMatchPrediction(
+    val matchId: String,
+    val choice: PredictionChoice,
+    val predictedHomeScore: Int = 1,
+    val predictedAwayScore: Int = 0,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+data class PredictorLeaderboardUser(
+    val rank: Int,
+    val username: String,
+    val avatarEmoji: String,
+    val countryFlag: String,
+    val points: Int,
+    val correctCount: Int,
+    val totalPredictions: Int,
+    val streak: Int,
+    val isUser: Boolean = false
+)
+

@@ -33,7 +33,9 @@ fun NewsAndPlayersScreen(
     playersList: List<PlayerProfile>,
     isNewsLoading: Boolean = false,
     newsSource: String = "API Publique Direct",
-    onRefreshNews: () -> Unit = {}
+    onRefreshNews: () -> Unit = {},
+    isDarkTheme: Boolean = true,
+    onToggleTheme: (() -> Unit)? = null
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Actualités Football", "Joueurs Vedettes")
@@ -44,6 +46,19 @@ fun NewsAndPlayersScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Actualités & Star System", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp) },
+                actions = {
+                    if (onToggleTheme != null) {
+                        IconButton(
+                            onClick = onToggleTheme,
+                            modifier = Modifier.testTag("news_theme_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                contentDescription = "Thème Sombre Nuit"
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         }

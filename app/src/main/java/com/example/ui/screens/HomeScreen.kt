@@ -46,9 +46,11 @@ fun HomeScreen(
     onOpenNotifications: () -> Unit,
     unreadNotifCount: Int,
     isDarkTheme: Boolean,
-    onToggleTheme: () -> Unit
+    onToggleTheme: () -> Unit,
+    appLanguage: com.example.util.AppLanguage = com.example.util.AppLanguage.FRENCH,
+    onToggleLanguage: () -> Unit = {}
 ) {
-    val leagues = listOf("Toutes", "Matchs Amicaux", "Euro", "Ligue 1", "Premier League", "LaLiga", "Bundesliga", "Serie A", "Ligue des Champions", "CAN")
+    val leagues = listOf("Toutes", "Ligue 1", "Premier League", "LaLiga", "Bundesliga", "Serie A", "Ligue des Champions", "CAN", "Euro / Ligue des Nations", "Matchs Amicaux")
 
     val filteredMatches = remember(matches, selectedLeague) {
         if (selectedLeague == "Toutes") matches else matches.filter { it.league == selectedLeague }
@@ -88,7 +90,7 @@ fun HomeScreen(
                                 fontSize = 18.sp
                             )
                             Text(
-                                text = "Directs & Commentateur IA TV",
+                                text = com.example.util.Strings.get("app_subtitle", appLanguage),
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -96,6 +98,18 @@ fun HomeScreen(
                     }
                 },
                 actions = {
+                    // Language Toggle Button (🇫🇷 FR / 🇬🇧 EN)
+                    IconButton(
+                        onClick = onToggleLanguage,
+                        modifier = Modifier.testTag("home_lang_toggle")
+                    ) {
+                        Text(
+                            text = if (appLanguage == com.example.util.AppLanguage.FRENCH) "🇬🇧 EN" else "🇫🇷 FR",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
                     IconButton(
                         onClick = onToggleTheme,
                         modifier = Modifier.testTag("theme_toggle_button")
@@ -140,7 +154,7 @@ fun HomeScreen(
                 .padding(paddingValues),
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
-            // Hero Banner
+            // Hero Banner - Match Vidéo en Direct ce Soir
             item {
                 Box(
                     modifier = Modifier
@@ -172,14 +186,14 @@ fun HomeScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.AutoAwesome,
+                                        imageVector = Icons.Default.PlayCircle,
                                         contentDescription = null,
                                         tint = Color.White,
-                                        modifier = Modifier.size(14.dp)
+                                        modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "COMMENTATEUR IA EN DIRECT",
+                                        text = "VIDÉOS EN DIRECT CE SOIR",
                                         color = Color.White,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
@@ -188,16 +202,17 @@ fun HomeScreen(
                             }
 
                             Text(
-                                text = "Ligue 1, PL, LaLiga, CAN...",
-                                color = Color.White.copy(alpha = 0.85f),
-                                fontSize = 11.sp
+                                text = "L1 • PL • LaLiga • CAN • UCL",
+                                color = Color.White.copy(alpha = 0.9f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
                             )
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
 
                         Text(
-                            text = "Vivez le Football comme à la TV",
+                            text = if (featuredMatch != null) "${featuredMatch.homeTeam} vs ${featuredMatch.awayTeam}" else "Vivez le Football en Vidéo",
                             color = Color.White,
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 22.sp,
@@ -205,7 +220,7 @@ fun HomeScreen(
                         )
 
                         Text(
-                            text = "Commentaires synthétiques en français, résumés tactiques automatiques et classements en temps réel.",
+                            text = "Vraies images de match, flux vidéo HD, temps forts interactifs et statistiques tactiques en superposition.",
                             color = Color.White.copy(alpha = 0.9f),
                             fontSize = 13.sp,
                             modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
@@ -214,26 +229,34 @@ fun HomeScreen(
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Button(
-                                onClick = onNavigateToMatches,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color.White,
-                                    contentColor = MaterialTheme.colorScheme.primary
-                                ),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.testTag("hero_see_matches_button")
-                            ) {
-                                Text("Voir les Directs", fontWeight = FontWeight.Bold)
+                            if (featuredMatch != null) {
+                                Button(
+                                    onClick = { onMatchClick(featuredMatch) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color.White,
+                                        contentColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.testTag("hero_watch_live_video_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Regarder le Match", fontWeight = FontWeight.ExtraBold)
+                                }
                             }
 
                             OutlinedButton(
-                                onClick = onNavigateToTeam,
+                                onClick = onNavigateToMatches,
                                 colors = ButtonDefaults.outlinedButtonColors(
                                     contentColor = Color.White
                                 ),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
-                                Text("Mon Équipe", fontWeight = FontWeight.Bold)
+                                Text("Tous les Directs", fontWeight = FontWeight.Bold)
                             }
                         }
                     }

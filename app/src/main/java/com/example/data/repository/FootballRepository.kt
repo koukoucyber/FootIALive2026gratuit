@@ -41,6 +41,51 @@ class FootballRepository(private val context: Context) {
     private val _newsSource = MutableStateFlow<String>("En chargement...")
     val newsSource: StateFlow<String> = _newsSource.asStateFlow()
 
+    // Local Preferences
+    private val prefs = context.getSharedPreferences("footia_live_prefs", Context.MODE_PRIVATE)
+
+    private val _isDarkTheme = MutableStateFlow<Boolean>(
+        prefs.getBoolean("is_dark_theme", true) // Default to true (Mode Sombre Nocturne)
+    )
+    val isDarkTheme: StateFlow<Boolean> = _isDarkTheme.asStateFlow()
+
+    fun toggleDarkTheme() {
+        val newTheme = !_isDarkTheme.value
+        _isDarkTheme.value = newTheme
+        prefs.edit().putBoolean("is_dark_theme", newTheme).apply()
+    }
+
+    // App Language Management (French / English)
+    private val _appLanguage = MutableStateFlow<com.example.util.AppLanguage>(
+        if (prefs.getString("app_language", "fr") == "en") com.example.util.AppLanguage.ENGLISH else com.example.util.AppLanguage.FRENCH
+    )
+    val appLanguage: StateFlow<com.example.util.AppLanguage> = _appLanguage.asStateFlow()
+
+    fun setAppLanguage(lang: com.example.util.AppLanguage) {
+        _appLanguage.value = lang
+        prefs.edit().putString("app_language", lang.code).apply()
+    }
+
+    // Predictions Management
+    private val _predictionsState = MutableStateFlow<Map<String, UserMatchPrediction>>(emptyMap())
+    val predictionsState: StateFlow<Map<String, UserMatchPrediction>> = _predictionsState.asStateFlow()
+
+    fun savePrediction(matchId: String, choice: PredictionChoice, homeScore: Int = 1, awayScore: Int = 0) {
+        val currentMap = _predictionsState.value.toMutableMap()
+        currentMap[matchId] = UserMatchPrediction(
+            matchId = matchId,
+            choice = choice,
+            predictedHomeScore = homeScore,
+            predictedAwayScore = awayScore
+        )
+        _predictionsState.value = currentMap
+
+        prefs.edit().putString("pred_choice_$matchId", choice.name).apply()
+        prefs.edit().putInt("pred_hs_$matchId", homeScore).apply()
+        prefs.edit().putInt("pred_as_$matchId", awayScore).apply()
+    }
+
+
     // Local Notifications
     private val _notificationsState = MutableStateFlow<List<AppNotification>>(emptyList())
     val notificationsState: StateFlow<List<AppNotification>> = _notificationsState.asStateFlow()
@@ -429,7 +474,15 @@ class FootballRepository(private val context: Context) {
             stats = stats1,
             events = events1,
             lineup = lineup1,
-            aiCommentaries = commentaries1
+            aiCommentaries = commentaries1,
+            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+            videoThumbnailUrl = "https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=800&auto=format&fit=crop",
+            videoHighlights = listOf(
+                VideoHighlightMarker("hl1_1", 38, "⚽ But Barcola", "GOAL", 3),
+                VideoHighlightMarker("hl1_2", 54, "🟨 Tacle Balerdi", "FOUL", 7),
+                VideoHighlightMarker("hl1_3", 67, "⚽ But Dembélé", "GOAL", 11),
+                VideoHighlightMarker("hl1_4", 71, "🧤 Parade Donnarumma", "SAVE", 13)
+            )
         )
 
         val m2 = Match(
@@ -455,6 +508,13 @@ class FootballRepository(private val context: Context) {
             lineup = lineup1,
             aiCommentaries = listOf(
                 AICommentary("c10", 88, "⚡ 88' - Fin de match irrespirable à l'Emirates Stadium ! Les deux géants se rendent coup pour coup !", "INTENSE")
+            ),
+            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+            videoThumbnailUrl = "https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800&auto=format&fit=crop",
+            videoHighlights = listOf(
+                VideoHighlightMarker("hl2_1", 22, "⚽ But Haaland", "GOAL", 2),
+                VideoHighlightMarker("hl2_2", 65, "🔥 Tir Foden", "CHANCE", 6),
+                VideoHighlightMarker("hl2_3", 76, "⚽ Penalty Saka", "GOAL", 10)
             )
         )
 
@@ -485,7 +545,15 @@ class FootballRepository(private val context: Context) {
             aiCommentaries = listOf(
                 AICommentary("c20", 90, "🎉 90' - FIN DU MATCH ! Victoire épique du Real Madrid dans un Clasico d'antologie !", "INTENSE")
             ),
-            aiSummary = "Un Clasico d'exception au Santiago Bernabéu ! Le Real Madrid s'impose 3-2 au terme d'un scénario à rebondissements avec des réalisations signées Vinícius Jr, Bellingham et le but vainqueur sur penalty de Mbappé."
+            aiSummary = "Un Clasico d'exception au Santiago Bernabéu ! Le Real Madrid s'impose 3-2 au terme d'un scénario à rebondissements avec des réalisations signées Vinícius Jr, Bellingham et le but vainqueur sur penalty de Mbappé.",
+            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+            videoThumbnailUrl = "https://images.unsplash.com/photo-1522778119026-d647f0596c20?w=800&auto=format&fit=crop",
+            videoHighlights = listOf(
+                VideoHighlightMarker("hl3_1", 12, "⚽ Coup franc Yamal", "GOAL", 2),
+                VideoHighlightMarker("hl3_2", 34, "⚽ Slalom Vini Jr", "GOAL", 5),
+                VideoHighlightMarker("hl3_3", 85, "⚽ But Bellingham", "GOAL", 8),
+                VideoHighlightMarker("hl3_4", 90, "⚽ Penalty Mbappé", "GOAL", 12)
+            )
         )
 
         val m4 = Match(
@@ -510,6 +578,12 @@ class FootballRepository(private val context: Context) {
             lineup = lineup1,
             aiCommentaries = listOf(
                 AICommentary("c30", 45, "🌍 45' - Mi-temps ! Le Sénégal mène 1-0 grâce à une bicyclette sensationnelle de Sadio Mané !", "INTENSE")
+            ),
+            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyBlazes.mp4",
+            videoThumbnailUrl = "https://images.unsplash.com/photo-1518091043644-c1d4457512c6?w=800&auto=format&fit=crop",
+            videoHighlights = listOf(
+                VideoHighlightMarker("hl4_1", 28, "⚽ Volée Sadio Mané", "GOAL", 3),
+                VideoHighlightMarker("hl4_2", 41, "🔥 Tête Haller", "CHANCE", 8)
             )
         )
 
@@ -520,23 +594,36 @@ class FootballRepository(private val context: Context) {
             homeTeamLogo = "https://media.api-sports.io/football/teams/157.png",
             awayTeam = "Inter Milan",
             awayTeamLogo = "https://media.api-sports.io/football/teams/505.png",
-            homeScore = 0,
-            awayScore = 0,
-            minute = 0,
-            status = MatchStatus.UPCOMING,
-            date = "Demain",
+            homeScore = 2,
+            awayScore = 1,
+            minute = 64,
+            status = MatchStatus.LIVE,
+            date = "Aujourd'hui",
             time = "21:00",
             stadium = "Allianz Arena",
             referee = "Szymon Marciniak",
-            stats = stats1,
-            events = emptyList(),
+            stats = stats1.copy(possessionHome = 60, possessionAway = 40, shotsHome = 15, shotsAway = 8),
+            events = listOf(
+                MatchEvent("e50", 17, EventType.GOAL, true, "H. Kane", "Pique par dessus le gardien"),
+                MatchEvent("e51", 49, EventType.GOAL, false, "Lautaro Martínez", "Tir puissant petit filet"),
+                MatchEvent("e52", 61, EventType.GOAL, true, "J. Musiala", "Festival dans la surface")
+            ),
             lineup = lineup1,
-            aiCommentaries = emptyList()
+            aiCommentaries = listOf(
+                AICommentary("c50", 64, "⭐ 64' - Choc européen grandiose ! Le Bayern reprend l'avantage grâce à un exploit de Musiala !", "INTENSE")
+            ),
+            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4",
+            videoThumbnailUrl = "https://images.unsplash.com/photo-1511886929837-354d827aae26?w=800&auto=format&fit=crop",
+            videoHighlights = listOf(
+                VideoHighlightMarker("hl5_1", 17, "⚽ Piqué Kane", "GOAL", 2),
+                VideoHighlightMarker("hl5_2", 49, "⚽ Égalisation Lautaro", "GOAL", 6),
+                VideoHighlightMarker("hl5_3", 61, "⚽ Festival Musiala", "GOAL", 10)
+            )
         )
 
         val m6 = Match(
             id = "m6",
-            league = "Euro",
+            league = "Euro / Ligue des Nations",
             homeTeam = "France",
             homeTeamLogo = "https://flagcdn.com/w160/fr.png",
             awayTeam = "Espagne",
@@ -553,92 +640,91 @@ class FootballRepository(private val context: Context) {
             events = listOf(
                 MatchEvent("e60", 24, EventType.GOAL, false, "Lamine Yamal", "Superbe enroulé du gauche"),
                 MatchEvent("e61", 52, EventType.GOAL, true, "K. Mbappé", "Penalty en force"),
-                MatchEvent("e62", 78, EventType.GOAL, true, "A. Griezmann", "Reprise de volee")
+                MatchEvent("e62", 78, EventType.GOAL, true, "A. Griezmann", "Reprise de volée")
             ),
             lineup = lineup1,
             aiCommentaries = listOf(
                 AICommentary("c60", 78, "🇪🇺 78' - BUT FABULEUX POUR LA FRANCE ! Antoine Griezmann reprend de volée un centre millimétré ! 2-1 pour les Bleus !", "INTENSE")
+            ),
+            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+            videoThumbnailUrl = "https://images.unsplash.com/photo-1551958219-acbc608c6377?w=800&auto=format&fit=crop",
+            videoHighlights = listOf(
+                VideoHighlightMarker("hl6_1", 24, "⚽ Enroulé Yamal", "GOAL", 2),
+                VideoHighlightMarker("hl6_2", 52, "⚽ Penalty Mbappé", "GOAL", 7),
+                VideoHighlightMarker("hl6_3", 78, "⚽ Volée Griezmann", "GOAL", 12)
             )
         )
 
         val m7 = Match(
             id = "m7",
-            league = "Euro",
-            homeTeam = "Allemagne",
-            homeTeamLogo = "https://flagcdn.com/w160/de.png",
-            awayTeam = "Angleterre",
-            awayTeamLogo = "https://flagcdn.com/w160/gb-eng.png",
-            homeScore = 0,
-            awayScore = 0,
-            minute = 0,
-            status = MatchStatus.UPCOMING,
-            date = "Demain",
-            time = "21:00",
-            stadium = "Olympiastadion, Berlin",
-            referee = "Szymon Marciniak",
-            stats = stats1,
-            events = emptyList(),
+            league = "Bundesliga",
+            homeTeam = "Borussia Dortmund",
+            homeTeamLogo = "https://media.api-sports.io/football/teams/165.png",
+            awayTeam = "Bayer Leverkusen",
+            awayTeamLogo = "https://media.api-sports.io/football/teams/168.png",
+            homeScore = 2,
+            awayScore = 2,
+            minute = 75,
+            status = MatchStatus.LIVE,
+            date = "Aujourd'hui",
+            time = "18:30",
+            stadium = "Signal Iduna Park",
+            referee = "Felix Brych",
+            stats = stats1.copy(possessionHome = 47, possessionAway = 53, shotsHome = 14, shotsAway = 16),
+            events = listOf(
+                MatchEvent("e70", 14, EventType.GOAL, true, "J. Brandt", "Frappe tendue"),
+                MatchEvent("e71", 38, EventType.GOAL, false, "F. Wirtz", "Plein axe lucarne"),
+                MatchEvent("e72", 59, EventType.GOAL, false, "V. Boniface", "Renard des surfaces"),
+                MatchEvent("e73", 72, EventType.GOAL, true, "S. Guirassy", "Tête puissante")
+            ),
             lineup = lineup1,
-            aiCommentaries = emptyList()
+            aiCommentaries = listOf(
+                AICommentary("c70", 75, "🇩🇪 75' - Ambiance de feu au Signal Iduna Park ! Égalisation de Guirassy face au champion Leverkusen !", "INTENSE")
+            ),
+            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+            videoThumbnailUrl = "https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=800&auto=format&fit=crop",
+            videoHighlights = listOf(
+                VideoHighlightMarker("hl7_1", 14, "⚽ But Brandt", "GOAL", 2),
+                VideoHighlightMarker("hl7_2", 38, "⚽ Bijou Wirtz", "GOAL", 5),
+                VideoHighlightMarker("hl7_3", 72, "⚽ Tête Guirassy", "GOAL", 10)
+            )
         )
 
         val m8 = Match(
             id = "m8",
-            league = "Matchs Amicaux",
-            homeTeam = "Brésil",
-            homeTeamLogo = "https://flagcdn.com/w160/br.png",
-            awayTeam = "Argentine",
-            awayTeamLogo = "https://flagcdn.com/w160/ar.png",
-            homeScore = 2,
-            awayScore = 2,
-            minute = 65,
-            status = MatchStatus.LIVE,
-            date = "Aujourd'hui",
-            time = "22:00",
-            stadium = "Maracanã, Rio de Janeiro",
-            referee = "Wilmar Roldán",
-            stats = stats1.copy(possessionHome = 50, possessionAway = 50, shotsHome = 11, shotsAway = 11),
-            events = listOf(
-                MatchEvent("e80", 15, EventType.GOAL, false, "L. Messi", "Coup franc magistral"),
-                MatchEvent("e81", 34, EventType.GOAL, true, "Vini Jr.", "Frappe croisée du droit"),
-                MatchEvent("e82", 58, EventType.GOAL, true, "Rodrygo", "Tir lucarne opposée"),
-                MatchEvent("e83", 62, EventType.GOAL, false, "J. Alvarez", "Reprise de la tête")
-            ),
-            lineup = lineup1,
-            aiCommentaries = listOf(
-                AICommentary("c80", 65, "🤝 65' - MATCH AMICAL DE GÉANTS ! Égalisation fantastique de Julián Álvarez pour l'Argentine face au Brésil ! 2-2 dans le Superclásico amical !", "EXCITED")
-            )
-        )
-
-        val m9 = Match(
-            id = "m9",
-            league = "Matchs Amicaux",
-            homeTeam = "Real Madrid",
-            homeTeamLogo = "https://media.api-sports.io/football/teams/541.png",
+            league = "Serie A",
+            homeTeam = "Inter Milan",
+            homeTeamLogo = "https://media.api-sports.io/football/teams/505.png",
             awayTeam = "AC Milan",
             awayTeamLogo = "https://media.api-sports.io/football/teams/489.png",
-            homeScore = 3,
+            homeScore = 2,
             awayScore = 1,
-            minute = 90,
-            status = MatchStatus.FINISHED,
-            date = "Hier",
-            time = "20:30",
-            stadium = "MetLife Stadium, New York",
-            referee = "Mark Geiger",
-            stats = stats1.copy(possessionHome = 58, possessionAway = 42, shotsHome = 16, shotsAway = 8),
+            minute = 83,
+            status = MatchStatus.LIVE,
+            date = "Aujourd'hui",
+            time = "20:45",
+            stadium = "San Siro, Milan",
+            referee = "Daniele Orsato",
+            stats = stats1.copy(possessionHome = 53, possessionAway = 47, shotsHome = 13, shotsAway = 11),
             events = listOf(
-                MatchEvent("e90", 12, EventType.GOAL, true, "J. Bellingham", "Tête plongeante"),
-                MatchEvent("e91", 40, EventType.GOAL, false, "R. Leão", "Contre-attaque éclair"),
-                MatchEvent("e92", 70, EventType.GOAL, true, "Endrick", "Premier but sous les couleurs du Real"),
-                MatchEvent("e93", 88, EventType.GOAL, true, "Arda Güler", "Superbe frappe enroulée")
+                MatchEvent("e80", 22, EventType.GOAL, true, "M. Thuram", "Frappe lourde"),
+                MatchEvent("e81", 44, EventType.GOAL, false, "R. Leão", "Accélération foudroyante"),
+                MatchEvent("e82", 79, EventType.GOAL, true, "N. Barella", "Demi-volée magique")
             ),
             lineup = lineup1,
             aiCommentaries = listOf(
-                AICommentary("c90", 90, "🤝 FIN - Victoire 3-1 du Real Madrid face à l'AC Milan lors de ce match amical de gala à New York !", "CELEBRATION")
+                AICommentary("c80", 83, "🇮🇹 83' - Derby della Madonnina incandescent ! Barella redonne l'avantage aux Nerazzurri !", "INTENSE")
+            ),
+            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+            videoThumbnailUrl = "https://images.unsplash.com/photo-1489944440615-453fc2b6a9a9?w=800&auto=format&fit=crop",
+            videoHighlights = listOf(
+                VideoHighlightMarker("hl8_1", 22, "⚽ Frappe Thuram", "GOAL", 3),
+                VideoHighlightMarker("hl8_2", 44, "⚽ Raid Leão", "GOAL", 7),
+                VideoHighlightMarker("hl8_3", 79, "⚽ Volée Barella", "GOAL", 11)
             )
         )
 
-        return listOf(m1, m2, m3, m4, m5, m6, m7, m8, m9)
+        return listOf(m1, m2, m3, m4, m5, m6, m7, m8)
     }
 
     private fun generateSampleStandings(): Map<String, List<LeagueStanding>> {
@@ -726,7 +812,16 @@ class FootballRepository(private val context: Context) {
                 rating = 8.8f,
                 marketValue = "180M €",
                 bio = "Star incontestée du football mondial, Mbappé allie une vitesse supersonique et une finition clinique devant le but.",
-                speed = 97, shooting = 92, passing = 83, dribbling = 93, defense = 38, physical = 79
+                speed = 97, shooting = 92, passing = 83, dribbling = 93, defense = 38, physical = 79,
+                expectedGoals = 26.4f,
+                expectedAssists = 7.9f,
+                keyPasses = 56,
+                duelsWon = 132,
+                duelsWonPct = 54,
+                shotsOnTarget = 68,
+                successfulDribbles = 84,
+                recoveries = 34,
+                minutesPlayed = 2480
             ),
             PlayerProfile(
                 id = "p2",
@@ -743,7 +838,16 @@ class FootballRepository(private val context: Context) {
                 rating = 8.7f,
                 marketValue = "180M €",
                 bio = "Cyborg des surfaces, puissance physique hors du commun et instinct de tueur dans la zone de vérité.",
-                speed = 89, shooting = 95, passing = 68, dribbling = 80, defense = 45, physical = 91
+                speed = 89, shooting = 95, passing = 68, dribbling = 80, defense = 45, physical = 91,
+                expectedGoals = 29.8f,
+                expectedAssists = 3.4f,
+                keyPasses = 24,
+                duelsWon = 118,
+                duelsWonPct = 62,
+                shotsOnTarget = 76,
+                successfulDribbles = 26,
+                recoveries = 29,
+                minutesPlayed = 2320
             ),
             PlayerProfile(
                 id = "p3",
@@ -759,8 +863,17 @@ class FootballRepository(private val context: Context) {
                 matches = 30,
                 rating = 8.6f,
                 marketValue = "170M €",
-                bio = "Dribbleur magique au style samba spectaculaire, capable d'éliminer 3 défenseurs sur un crochet intérieur.",
-                speed = 95, shooting = 85, passing = 82, dribbling = 95, defense = 32, physical = 74
+                bio = "Dribbleur magique au style samba spectaculaire, capable d'éliminer plusieurs défenseurs sur un crochet intérieur.",
+                speed = 95, shooting = 85, passing = 82, dribbling = 95, defense = 32, physical = 74,
+                expectedGoals = 18.9f,
+                expectedAssists = 12.6f,
+                keyPasses = 66,
+                duelsWon = 158,
+                duelsWonPct = 52,
+                shotsOnTarget = 51,
+                successfulDribbles = 106,
+                recoveries = 42,
+                minutesPlayed = 2540
             ),
             PlayerProfile(
                 id = "p4",
@@ -777,7 +890,16 @@ class FootballRepository(private val context: Context) {
                 rating = 8.5f,
                 marketValue = "150M €",
                 bio = "Prodige précoce doté d'un pied gauche merveilleux et d'une vision du jeu digne des plus grands maîtres du Camp Nou.",
-                speed = 90, shooting = 82, passing = 88, dribbling = 94, defense = 40, physical = 68
+                speed = 90, shooting = 82, passing = 88, dribbling = 94, defense = 40, physical = 68,
+                expectedGoals = 12.3f,
+                expectedAssists = 16.8f,
+                keyPasses = 78,
+                duelsWon = 152,
+                duelsWonPct = 56,
+                shotsOnTarget = 39,
+                successfulDribbles = 101,
+                recoveries = 54,
+                minutesPlayed = 2620
             ),
             PlayerProfile(
                 id = "p5",
@@ -794,7 +916,172 @@ class FootballRepository(private val context: Context) {
                 rating = 8.4f,
                 marketValue = "100M €",
                 bio = "Machine de guerre offensive, redoutable dans le jeu aérien et le pressing défensif.",
-                speed = 91, shooting = 88, passing = 72, dribbling = 81, defense = 48, physical = 88
+                speed = 91, shooting = 88, passing = 72, dribbling = 81, defense = 48, physical = 88,
+                expectedGoals = 21.1f,
+                expectedAssists = 4.7f,
+                keyPasses = 30,
+                duelsWon = 165,
+                duelsWonPct = 65,
+                shotsOnTarget = 54,
+                successfulDribbles = 44,
+                recoveries = 48,
+                minutesPlayed = 2150
+            ),
+            PlayerProfile(
+                id = "p6",
+                name = "Jude Bellingham",
+                team = "Real Madrid",
+                teamLogo = "https://media.api-sports.io/football/teams/541.png",
+                position = "Milieu Offensif",
+                nationality = "Angleterre 🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+                age = 22,
+                photoUrl = "https://media.api-sports.io/football/players/152982.png",
+                goals = 19,
+                assists = 12,
+                matches = 31,
+                rating = 8.7f,
+                marketValue = "180M €",
+                bio = "Milieu tout-terrain complet combinant projection tranchante dans la surface, récupération et leadership naturel.",
+                speed = 84, shooting = 87, passing = 88, dribbling = 89, defense = 76, physical = 85,
+                expectedGoals = 16.5f,
+                expectedAssists = 11.2f,
+                keyPasses = 72,
+                duelsWon = 188,
+                duelsWonPct = 67,
+                shotsOnTarget = 44,
+                successfulDribbles = 68,
+                recoveries = 92,
+                minutesPlayed = 2710
+            ),
+            PlayerProfile(
+                id = "p7",
+                name = "Kevin De Bruyne",
+                team = "Manchester City",
+                teamLogo = "https://media.api-sports.io/football/teams/50.png",
+                position = "Meneur de Jeu",
+                nationality = "Belgique 🇧🇪",
+                age = 34,
+                photoUrl = "https://media.api-sports.io/football/players/629.png",
+                goals = 10,
+                assists = 22,
+                matches = 26,
+                rating = 8.6f,
+                marketValue = "60M €",
+                bio = "Maestro de la passe décisive, précision millimétrée des centres et transversales destructrices pour les défenses.",
+                speed = 76, shooting = 86, passing = 96, dribbling = 87, defense = 64, physical = 75,
+                expectedGoals = 7.4f,
+                expectedAssists = 19.8f,
+                keyPasses = 98,
+                duelsWon = 92,
+                duelsWonPct = 49,
+                shotsOnTarget = 33,
+                successfulDribbles = 38,
+                recoveries = 65,
+                minutesPlayed = 2140
+            ),
+            PlayerProfile(
+                id = "p8",
+                name = "Mohamed Salah",
+                team = "Liverpool",
+                teamLogo = "https://media.api-sports.io/football/teams/40.png",
+                position = "Ailier Droit",
+                nationality = "Égypte 🇪🇬",
+                age = 33,
+                photoUrl = "https://media.api-sports.io/football/players/306.png",
+                goals = 25,
+                assists = 15,
+                matches = 32,
+                rating = 8.6f,
+                marketValue = "80M €",
+                bio = "Le Pharaon d'Anfield, tranchant de son pied gauche, constance phénoménale et créateur hors pair en zone haute.",
+                speed = 91, shooting = 89, passing = 85, dribbling = 90, defense = 42, physical = 76,
+                expectedGoals = 23.2f,
+                expectedAssists = 14.1f,
+                keyPasses = 75,
+                duelsWon = 124,
+                duelsWonPct = 50,
+                shotsOnTarget = 63,
+                successfulDribbles = 61,
+                recoveries = 41,
+                minutesPlayed = 2730
+            ),
+            PlayerProfile(
+                id = "p9",
+                name = "Achraf Hakimi",
+                team = "Paris SG",
+                teamLogo = "https://media.api-sports.io/football/teams/85.png",
+                position = "Latéral Droit",
+                nationality = "Maroc 🇲🇦",
+                age = 27,
+                photoUrl = "https://media.api-sports.io/football/players/85.png",
+                goals = 8,
+                assists = 11,
+                matches = 30,
+                rating = 8.4f,
+                marketValue = "75M €",
+                bio = "TGV du couloir droit, apports offensifs incessants, replis défensifs à grande vitesse et centres dangereux.",
+                speed = 95, shooting = 74, passing = 83, dribbling = 84, defense = 81, physical = 84,
+                expectedGoals = 6.3f,
+                expectedAssists = 10.2f,
+                keyPasses = 58,
+                duelsWon = 176,
+                duelsWonPct = 63,
+                shotsOnTarget = 25,
+                successfulDribbles = 74,
+                recoveries = 98,
+                minutesPlayed = 2600
+            ),
+            PlayerProfile(
+                id = "p10",
+                name = "Rodri",
+                team = "Manchester City",
+                teamLogo = "https://media.api-sports.io/football/teams/50.png",
+                position = "Milieu Défensif",
+                nationality = "Espagne 🇪🇸",
+                age = 29,
+                photoUrl = "https://media.api-sports.io/football/players/643.png",
+                goals = 8,
+                assists = 9,
+                matches = 33,
+                rating = 8.8f,
+                marketValue = "130M €",
+                bio = "Ballon d'Or, régulateur absolu du tempo au milieu, intelligence tactique hors norme et invulnérable sous la pression.",
+                speed = 68, shooting = 80, passing = 92, dribbling = 82, defense = 89, physical = 87,
+                expectedGoals = 5.2f,
+                expectedAssists = 7.5f,
+                keyPasses = 53,
+                duelsWon = 216,
+                duelsWonPct = 72,
+                shotsOnTarget = 22,
+                successfulDribbles = 50,
+                recoveries = 172,
+                minutesPlayed = 2920
+            ),
+            PlayerProfile(
+                id = "p11",
+                name = "Cole Palmer",
+                team = "Chelsea",
+                teamLogo = "https://media.api-sports.io/football/teams/49.png",
+                position = "Milieu Offensif",
+                nationality = "Angleterre 🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+                age = 23,
+                photoUrl = "https://media.api-sports.io/football/players/162685.png",
+                goals = 22,
+                assists = 13,
+                matches = 31,
+                rating = 8.5f,
+                marketValue = "110M €",
+                bio = "Cold Palmer : sang-froid légendaire sur penalty, vista exceptionnelle entre les lignes et frappe chirurgicale.",
+                speed = 82, shooting = 88, passing = 89, dribbling = 88, defense = 52, physical = 70,
+                expectedGoals = 19.8f,
+                expectedAssists = 12.2f,
+                keyPasses = 69,
+                duelsWon = 126,
+                duelsWonPct = 51,
+                shotsOnTarget = 49,
+                successfulDribbles = 65,
+                recoveries = 46,
+                minutesPlayed = 2640
             )
         )
     }

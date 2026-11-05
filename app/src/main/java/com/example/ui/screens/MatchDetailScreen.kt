@@ -26,6 +26,7 @@ import com.example.data.model.MatchStatus
 import com.example.ui.components.AICommentaryCard
 import com.example.ui.components.LiveBadge
 import com.example.ui.components.LiveScoreAndCommentaryFeed
+import com.example.ui.components.PublicMatchChat
 import com.example.ui.components.StatProgressBar
 import com.example.ui.components.TeamLogo
 import com.example.ui.theme.LiveGlowGreen
@@ -35,14 +36,18 @@ import kotlinx.coroutines.launch
 @Composable
 fun MatchDetailScreen(
     match: Match,
+    allMatches: List<Match> = emptyList(),
+    onSelectMatch: ((Match) -> Unit)? = null,
     onBack: () -> Unit,
     onAskAI: suspend (question: String, languageCode: String) -> String,
     onGenerateDebrief: suspend (languageCode: String) -> String,
-    onGenerateLiveCommentary: (suspend (match: Match, minute: Int, actionPrompt: String?, languageCode: String) -> AICommentary)? = null
+    onGenerateLiveCommentary: (suspend (match: Match, minute: Int, actionPrompt: String?, languageCode: String) -> AICommentary)? = null,
+    isDarkTheme: Boolean = true,
+    onToggleTheme: (() -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Direct (Stream Live)", "Statistiques", "Compositions", "Résumé IA")
+    val tabs = listOf("Direct (Vidéos Réelles)", "Chat Public", "Statistiques", "Compositions", "Résumé IA")
 
     var selectedLanguageCode by remember { mutableStateOf("fr") }
     var currentMatchState by remember(match) { mutableStateOf(match) }
@@ -58,6 +63,19 @@ fun MatchDetailScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour")
+                    }
+                },
+                actions = {
+                    if (onToggleTheme != null) {
+                        IconButton(
+                            onClick = onToggleTheme,
+                            modifier = Modifier.testTag("detail_theme_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                contentDescription = "Thème Sombre Nuit"
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -86,6 +104,12 @@ fun MatchDetailScreen(
                     LiveScoreAndCommentaryFeed(
                         match = currentMatchState,
                         commentaries = currentCommentaries,
+                        allMatches = allMatches,
+                        onSelectMatch = { selected ->
+                            currentMatchState = selected
+                            currentCommentaries = selected.aiCommentaries
+                            onSelectMatch?.invoke(selected)
+                        },
                         selectedLanguageCode = selectedLanguageCode,
                         onLanguageSelected = { lang ->
                             selectedLanguageCode = lang
@@ -136,7 +160,14 @@ fun MatchDetailScreen(
                     )
                 }
 
-                1 -> { // Match Statistics
+                1 -> { // Chat Public Gratuit pour le match
+                    PublicMatchChat(
+                        match = currentMatchState,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                2 -> { // Match Statistics
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -171,7 +202,7 @@ fun MatchDetailScreen(
                     }
                 }
 
-                2 -> { // Lineups / Compositions
+                3 -> { // Lineups / Compositions
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -204,7 +235,7 @@ fun MatchDetailScreen(
                     }
                 }
 
-                3 -> { // AI Match Summary / Debrief
+                4 -> { // AI Match Summary / Debrief
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()

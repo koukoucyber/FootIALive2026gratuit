@@ -25,13 +25,15 @@ import com.example.ui.components.MatchCard
 fun MatchesScreen(
     matches: List<Match>,
     onMatchClick: (Match) -> Unit,
-    onTriggerSimulatedAction: (matchId: String, eventType: EventType, player: String, isHome: Boolean) -> Unit
+    onTriggerSimulatedAction: (matchId: String, eventType: EventType, player: String, isHome: Boolean) -> Unit,
+    isDarkTheme: Boolean = true,
+    onToggleTheme: (() -> Unit)? = null
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedLeague by remember { mutableStateOf("Toutes") }
     var selectedStatusTab by remember { mutableStateOf("Tous") }
 
-    val leagues = listOf("Toutes", "Matchs Amicaux", "Euro", "Ligue 1", "Premier League", "LaLiga", "Bundesliga", "Serie A", "Ligue des Champions", "CAN")
+    val leagues = listOf("Toutes", "Ligue 1", "Premier League", "LaLiga", "Bundesliga", "Serie A", "Ligue des Champions", "CAN", "Euro / Ligue des Nations", "Matchs Amicaux")
     val statusTabs = listOf("Tous", "En Direct", "Terminé", "À Venir")
 
     val filteredMatches = remember(matches, searchQuery, selectedLeague, selectedStatusTab) {
@@ -64,6 +66,19 @@ fun MatchesScreen(
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp
                     )
+                },
+                actions = {
+                    if (onToggleTheme != null) {
+                        IconButton(
+                            onClick = onToggleTheme,
+                            modifier = Modifier.testTag("matches_theme_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                contentDescription = "Thème Sombre Nuit"
+                            )
+                        }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )

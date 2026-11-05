@@ -25,3 +25,5 @@ val LiveRed = Color(0xFFEF4444)
 val LiveGlowGreen = Color(0xFF10B981)
 val GoldCard = Color(0xFFFBBF24)
 val RedCard = Color(0xFFDC2626)
+val PrimaryGold = Color(0xFFF59E0B)
+

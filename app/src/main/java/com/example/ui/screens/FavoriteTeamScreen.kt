@@ -31,7 +31,9 @@ fun FavoriteTeamScreen(
     favoriteTeams: List<FavoriteTeamEntity>,
     allMatches: List<Match>,
     onToggleFavorite: (teamName: String, league: String, logoUrl: String) -> Unit,
-    onMatchClick: (Match) -> Unit
+    onMatchClick: (Match) -> Unit,
+    isDarkTheme: Boolean = true,
+    onToggleTheme: (() -> Unit)? = null
 ) {
     val defaultClubs = listOf(
         Triple("Paris SG", "Ligue 1", "https://media.api-sports.io/football/teams/85.png"),
@@ -61,6 +63,19 @@ fun FavoriteTeamScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Mon Équipe Favorite ⭐", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp) },
+                actions = {
+                    if (onToggleTheme != null) {
+                        IconButton(
+                            onClick = onToggleTheme,
+                            modifier = Modifier.testTag("fav_theme_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                contentDescription = "Thème Sombre Nuit"
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
         }

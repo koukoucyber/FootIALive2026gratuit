@@ -29,11 +29,16 @@ import com.example.ui.components.TeamLogo
 import com.example.ui.theme.LiveGlowGreen
 import com.example.ui.theme.LiveRed
 
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StandingsScreen(
     standingsMap: Map<String, List<LeagueStanding>>,
-    initialLeague: String = "Ligue 1"
+    initialLeague: String = "Ligue 1",
+    isDarkTheme: Boolean = true,
+    onToggleTheme: (() -> Unit)? = null
 ) {
     var selectedLeague by remember { mutableStateOf(initialLeague) }
     val leagues = listOf("Matchs Amicaux", "Euro", "Ligue 1", "Premier League", "LaLiga", "Bundesliga", "Serie A", "Ligue des Champions", "CAN")
@@ -57,6 +62,19 @@ fun StandingsScreen(
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 20.sp
                         )
+                    }
+                },
+                actions = {
+                    if (onToggleTheme != null) {
+                        IconButton(
+                            onClick = onToggleTheme,
+                            modifier = Modifier.testTag("standings_theme_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                contentDescription = "Thème Sombre Nuit"
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)

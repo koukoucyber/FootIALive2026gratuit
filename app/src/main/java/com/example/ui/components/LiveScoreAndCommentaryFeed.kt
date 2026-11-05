@@ -46,6 +46,8 @@ fun LiveScoreAndCommentaryFeed(
     match: Match,
     commentaries: List<AICommentary>,
     modifier: Modifier = Modifier,
+    allMatches: List<Match> = emptyList(),
+    onSelectMatch: ((Match) -> Unit)? = null,
     selectedLanguageCode: String = "fr",
     onLanguageSelected: ((String) -> Unit)? = null,
     onSimulateEvent: ((type: String) -> Unit)? = null,
@@ -78,13 +80,14 @@ fun LiveScoreAndCommentaryFeed(
             .fillMaxSize()
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        // 1. Composant Header du Score en Temps Réel
-        RealTimeScoreHeaderCard(
+        // 1. Vrai Lecteur Vidéo de Match en Direct avec Statistiques HUD en Superposition
+        RealMatchVideoPlayer(
             match = match,
-            onSimulateEvent = onSimulateEvent
+            allMatches = allMatches,
+            onSelectMatch = onSelectMatch
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         // 2. En-tête du composant dédié au flux IA
         Card(
