@@ -2,9 +2,10 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main", "principal" ]
+    branches: [ "main", "master", "principal" ]
   pull_request:
-    branches: [ "main", "principal" ]
+    branches: [ "main", "master", "principal" ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -20,22 +21,20 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Find and build with Gradle
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+
+    - name: Decode Debug Keystore
       run: |
-        GRADLEW_PATH=$(find . -name gradlew -maxdepth 4 | head -n 1)
-        if [ -z "$GRADLEW_PATH" ]; then
-          echo "Erreur : gradlew introuvable !"
-          exit 1
+        if [ -f "debug.keystore.base64" ]; then
+          base64 -d debug.keystore.base64 > debug.keystore
         fi
-        DIR=$(dirname "$GRADLEW_PATH")
-        cd "$DIR"
-        chmod +x gradlew
-        ./gradlew assembleDebug
+
+    - name: Build APK with Gradle
+      run: gradle assembleDebug
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: app-debug
-        path: '**/build/outputs/apk/debug/app-debug.apk'
-
-
+        name: FootIA-Live-debug
+        path: app/build/outputs/apk/debug/app-debug.apk
