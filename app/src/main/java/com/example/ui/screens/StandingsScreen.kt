@@ -41,9 +41,23 @@ fun StandingsScreen(
     onToggleTheme: (() -> Unit)? = null
 ) {
     var selectedLeague by remember { mutableStateOf(initialLeague) }
-    val leagues = listOf("Matchs Amicaux", "Euro", "Ligue 1", "Premier League", "LaLiga", "Bundesliga", "Serie A", "Ligue des Champions", "CAN")
+    val leagues = listOf(
+        "Qualifications CAN 2027",
+        "RSL (Saudi Pro League)",
+        "Ligue 1",
+        "Premier League",
+        "LaLiga",
+        "Ligue des Champions",
+        "Ligue Europa",
+        "CAN",
+        "Bundesliga",
+        "Serie A",
+        "Euro / Ligue des Nations",
+        "Matchs Amicaux"
+    )
 
-    val currentStandings = standingsMap[selectedLeague] ?: emptyList()
+    val currentStandings = standingsMap[selectedLeague]
+        ?: if (selectedLeague.startsWith("Euro")) standingsMap["Euro"] ?: emptyList() else emptyList()
 
     Scaffold(
         topBar = {
@@ -88,6 +102,7 @@ fun StandingsScreen(
         ) {
             // League Filter Bar (LazyRow)
             LazyRow(
+                modifier = Modifier.testTag("standings_league_row"),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -333,35 +348,50 @@ fun StandingsScreen(
                             }
                         }
 
-                        // Legend / Abbreviations Footer
+                        // Legend / Abbreviations & Qualification Footer
                         Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 4.dp)
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
                             ) {
+                                val qualificationNotice = when (selectedLeague) {
+                                    "Qualifications CAN 2027" -> "🟢 Rang 1-2 : Qualification Directe Phase Finale CAN 2027 (Kenya - Ouganda - Tanzanie)"
+                                    "RSL (Saudi Pro League)" -> "🟢 Rang 1-3 : Qualification AFC Champions League Elite"
+                                    "Ligue 1", "Premier League", "LaLiga" -> "🟢 Rang 1-4 : Qualification UEFA Champions League • 🔵 Rang 5 : Ligue Europa • 🔴 Relégation"
+                                    "CAN" -> "🟢 Rang 1-2 : Qualification Quarts de Finale CAN"
+                                    else -> "🟢 Zone de Qualification Supérieure • 🔴 Zone Rouge"
+                                }
+
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
                                         imageVector = Icons.Default.Info,
                                         contentDescription = null,
-                                        modifier = Modifier.size(14.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        modifier = Modifier.size(13.dp),
+                                        tint = MaterialTheme.colorScheme.primary
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "MJ: Matchs Joués • V: Victoires • N: Nuls • D: Défaites • DB: Différence de Buts • PTS: Points",
+                                        text = qualificationNotice,
                                         fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
                                     )
                                 }
+
+                                Spacer(modifier = Modifier.height(2.dp))
+
+                                Text(
+                                    text = "MJ: Matchs • V: Victoires • N: Nuls • D: Défaites • DB: Différence • PTS: Points",
+                                    fontSize = 9.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }

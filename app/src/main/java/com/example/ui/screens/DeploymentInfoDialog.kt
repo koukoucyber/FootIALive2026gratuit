@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.components.InstallationGuideDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -24,6 +25,7 @@ fun DeploymentInfoDialog(
 ) {
     var apiKeyInput by remember { mutableStateOf(currentApiKey) }
     var selectedTab by remember { mutableIntStateOf(0) }
+    var showVisualGuide by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -44,18 +46,46 @@ fun DeploymentInfoDialog(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 if (selectedTab == 0) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(text = "✅ APK Compilé & Prêt !", fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Le fichier 'FootIA-Live.apk' (24 Mo) a été généré et placé directement à la racine de vos fichiers. Vous pouvez faire un clic droit dessus dans l'explorateur de fichiers pour le télécharger instantanément.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = { showVisualGuide = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(Icons.Default.PhoneAndroid, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("📲 Voir le Guide Pas à Pas (Images)", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     Text(text = "1. Export Android APK / AAB :", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text(
-                        text = "• Dans AI Studio, ouvrez le menu Paramètres / Export.\n• Téléchargez le fichier APK généré pour installation directe sur votre smartphone ou exportez vers GitHub pour Google Play Store.",
+                        text = "• Dans AI Studio, vous pouvez aussi cliquer en haut à droite sur le menu d'export pour générer un nouvel APK ou télécharger le code complet (ZIP).\n• Compatible avec tous les smartphones Android (Samsung, Xiaomi, Pixel...).",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    Text(text = "2. Hébergement Firebase Hosting gratuit :", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(text = "2. Déploiement GitHub Actions Automatique :", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text(
-                        text = "• Installez Firebase CLI : 'npm install -g firebase-tools'\n• Initialisez le projet : 'firebase init hosting'\n• Déployez gratuitement en 1 clic avec 'firebase deploy'.",
+                        text = "• Le workflow '.github/workflows/build-apk.yml' est déjà configuré.\n• Chaque mise à jour génère automatiquement votre APK dans l'onglet 'Actions' sur GitHub.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -104,4 +134,8 @@ fun DeploymentInfoDialog(
             }
         }
     )
+
+    if (showVisualGuide) {
+        InstallationGuideDialog(onDismiss = { showVisualGuide = false })
+    }
 }

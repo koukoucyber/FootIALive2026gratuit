@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.FavoriteTeamEntity
 import com.example.data.model.Match
+import com.example.data.model.MatchStatus
 import com.example.ui.components.MatchCard
 import com.example.ui.components.TeamLogo
 
@@ -186,9 +187,15 @@ fun FavoriteTeamScreen(
                                 Text(text = "Forme", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text(text = "🟢 🟢 🟡 🟢", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
+                            val nextFixture = teamMatches.firstOrNull { it.status == MatchStatus.LIVE || it.status == MatchStatus.UPCOMING }
+                            val nextLabel = when {
+                                nextFixture == null -> "Voir calendrier"
+                                nextFixture.status == MatchStatus.LIVE -> "En direct ${nextFixture.minute}'"
+                                else -> "${nextFixture.date} • ${nextFixture.time}"
+                            }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(text = "Prochain Match", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(text = "Ce soir 20:45", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                                Text(text = nextLabel, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(text = "Alerte Buts", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)

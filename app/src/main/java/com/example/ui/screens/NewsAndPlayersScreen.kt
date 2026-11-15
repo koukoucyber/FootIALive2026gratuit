@@ -5,8 +5,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -19,9 +21,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.ContentScale
 import coil.compose.AsyncImage
+import com.example.data.model.MercatoNewsItem
 import com.example.data.model.NewsArticle
 import com.example.data.model.PlayerProfile
+import com.example.ui.components.MercatoGeminiComponent
 import com.example.ui.components.NewsFeedComponent
 import com.example.ui.components.StatProgressBar
 import com.example.ui.components.TeamLogo
@@ -31,21 +36,27 @@ import com.example.ui.components.TeamLogo
 fun NewsAndPlayersScreen(
     newsList: List<NewsArticle>,
     playersList: List<PlayerProfile>,
+    mercatoList: List<MercatoNewsItem> = emptyList(),
+    geminiAnalysis: String? = null,
     isNewsLoading: Boolean = false,
+    isMercatoLoading: Boolean = false,
     newsSource: String = "API Publique Direct",
+    mercatoLastSync: String = "",
     onRefreshNews: () -> Unit = {},
+    onRefreshMercato: () -> Unit = {},
+    onAnalyzeMercato: (String?) -> Unit = {},
     isDarkTheme: Boolean = true,
     onToggleTheme: (() -> Unit)? = null
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Actualités Football", "Joueurs Vedettes")
+    val tabs = listOf("Actualités Football", "🔥 Mercato IA Gemini", "Joueurs Vedettes")
 
     var selectedPlayer by remember { mutableStateOf<PlayerProfile?>(null) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Actualités & Star System", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp) },
+                title = { Text("Actualités & Mercato IA", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp) },
                 actions = {
                     if (onToggleTheme != null) {
                         IconButton(
@@ -68,12 +79,16 @@ fun NewsAndPlayersScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            TabRow(selectedTabIndex = selectedTab, containerColor = MaterialTheme.colorScheme.surface) {
+            ScrollableTabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = MaterialTheme.colorScheme.surface,
+                edgePadding = 12.dp
+            ) {
                 tabs.forEachIndexed { index, title ->
                     Tab(
                         selected = selectedTab == index,
                         onClick = { selectedTab = index },
-                        text = { Text(title, fontWeight = FontWeight.Bold) }
+                        text = { Text(title, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
                     )
                 }
             }
@@ -94,7 +109,24 @@ fun NewsAndPlayersScreen(
                     }
                 }
 
-                1 -> { // Players Catalog
+                1 -> { // Mercato Intelligence Gemini (Le Parisien, Foot Mercato, Le Monde)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        MercatoGeminiComponent(
+                            mercatoItems = mercatoList,
+                            geminiAnalysis = geminiAnalysis,
+                            isLoading = isMercatoLoading,
+                            lastSyncText = mercatoLastSync,
+                            onRefresh = onRefreshMercato,
+                            onAnalyzeWithGemini = onAnalyzeMercato
+                        )
+                    }
+                }
+
+                2 -> { // Players Catalog
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxSize()
@@ -124,7 +156,8 @@ fun NewsAndPlayersScreen(
                                         AsyncImage(
                                             model = player.photoUrl,
                                             contentDescription = player.name,
-                                            modifier = Modifier.fillMaxSize()
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
                                         )
                                     }
                                     Spacer(modifier = Modifier.width(16.dp))
@@ -158,16 +191,53 @@ fun NewsAndPlayersScreen(
                 onDismissRequest = { selectedPlayer = null },
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        TeamLogo(url = p.teamLogo, teamName = p.team, modifier = Modifier.size(28.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(p.name, fontWeight = FontWeight.Bold)
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            AsyncImage(
+                                model = p.photoUrl,
+                                contentDescription = p.name,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(p.name, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text(p.team, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 },
                 text = {
-                    Column {
-                        Text(text = "${p.position} • ${p.team} (${p.nationality})", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text(text = "Valeur estimée : ${p.marketValue} • Rating : ⭐ ${p.rating}", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(8.dp))
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(70.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                AsyncImage(
+                                    model = p.photoUrl,
+                                    contentDescription = p.name,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+                            Column {
+                                Text(text = "${p.position} • ${p.nationality}", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Text(text = "Valeur : ${p.marketValue}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
+                                Text(text = "Note : ⭐ ${p.rating} / 10", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(text = p.bio, fontSize = 13.sp)
 
                         Spacer(modifier = Modifier.height(12.dp))

@@ -1,11 +1,12 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,6 +22,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.Match
@@ -28,12 +30,17 @@ import com.example.data.model.MatchStatus
 import com.example.data.model.PredictionChoice
 import com.example.data.model.PredictorLeaderboardUser
 import com.example.data.model.UserMatchPrediction
+import com.example.ui.components.LiveBadge
+import com.example.ui.components.PulsingLiveScore
 import com.example.ui.components.TeamLogo
 import com.example.ui.theme.LiveGlowGreen
-import com.example.ui.theme.LiveRed
 import com.example.ui.theme.PrimaryGold
 import com.example.util.AppLanguage
 import com.example.util.Strings
+
+private enum class PredictionFilter {
+    OPEN, LIVE, REAL_MADRID, FINISHED, ALL
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,7 +51,9 @@ fun PredictionsScreen(
     appLanguage: AppLanguage = AppLanguage.FRENCH,
     onToggleLanguage: () -> Unit = {},
     isDarkTheme: Boolean = true,
-    onToggleTheme: (() -> Unit)? = null
+    onToggleTheme: (() -> Unit)? = null,
+    onMatchClick: ((Match) -> Unit)? = null,
+    onRefreshMatches: (() -> Unit)? = null
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf(
@@ -52,17 +61,69 @@ fun PredictionsScreen(
         Strings.get("leaderboard", appLanguage)
     )
 
-    // Calculate user points and stats
-    val userPredictionCount = predictions.size
-    val userPoints = 240 + (userPredictionCount * 50)
-    val userRank = if (userPoints > 400) 2 else if (userPoints > 300) 3 else 5
+    val matchById = remember(matches) { matches.associateBy { it.id } }
 
-    // Sample Leaderboard Users
-    val leaderboardUsers = remember(userPoints) {
+    // Evaluate real points & accuracy from predictions matched against finished fixtures
+    val evalStats = remember(predictions, matchById) {
+        var finishedPredicted = 0
+        var correctOutcomes = 0
+        var exactScores = 0
+        var earnedPoints = 0
+        var currentStreak = 0
+
+        val sortedFinishedPreds = predictions.values
+            .mapNotNull { pred -> matchById[pred.matchId]?.takeIf { it.status == MatchStatus.FINISHED }?.let { pred to it } }
+            .sortedByDescending { it.second.kickoffMillis }
+
+        sortedFinishedPreds.forEachIndexed { idx, (pred, m) ->
+            finishedPredicted++
+            val actualChoice = when {
+                m.homeScore > m.awayScore -> PredictionChoice.HOME_WIN
+                m.awayScore > m.homeScore -> PredictionChoice.AWAY_WIN
+                else -> PredictionChoice.DRAW
+            }
+            val isCorrectOutcome = pred.choice == actualChoice
+            val isExactScore = pred.predictedHomeScore == m.homeScore && pred.predictedAwayScore == m.awayScore
+            if (isCorrectOutcome) {
+                correctOutcomes++
+                earnedPoints += 50
+                if (idx == currentStreak) currentStreak++
+            }
+            if (isExactScore) {
+                exactScores++
+                earnedPoints += 100
+            }
+        }
+
+        val pendingCount = (predictions.size - finishedPredicted).coerceAtLeast(0)
+        val totalPts = earnedPoints + (pendingCount * 10)
+        val accuracyStr = if (finishedPredicted > 0) "${(correctOutcomes * 100) / finishedPredicted}%" else "—"
+        QuadrupleStats(
+            totalPoints = totalPts,
+            finishedPredicted = finishedPredicted,
+            correctOutcomes = correctOutcomes,
+            accuracyLabel = accuracyStr,
+            streak = currentStreak
+        )
+    }
+
+    val userPredictionCount = predictions.size
+
+    val leaderboardUsers = remember(evalStats.totalPoints, evalStats.correctOutcomes, userPredictionCount, evalStats.streak) {
         listOf(
             PredictorLeaderboardUser(1, "Alex_Prono 🏆", "⚽", "🇫🇷", 450, 9, 11, 6),
             PredictorLeaderboardUser(2, "Mamadou_Goal", "🔥", "🇨🇮", 390, 8, 10, 4),
-            PredictorLeaderboardUser(userRank, "Vous (Supporter)", "🎯", "🇫🇷", userPoints, 5 + userPredictionCount, 7 + userPredictionCount, 3, isUser = true),
+            PredictorLeaderboardUser(
+                rank = 3,
+                username = "Vous (Supporter)",
+                avatarEmoji = "🎯",
+                countryFlag = "🇫🇷",
+                points = evalStats.totalPoints,
+                correctCount = evalStats.correctOutcomes,
+                totalPredictions = userPredictionCount,
+                streak = evalStats.streak,
+                isUser = true
+            ),
             PredictorLeaderboardUser(4, "Sofiane_10", "⭐", "🇩🇿", 280, 6, 9, 2),
             PredictorLeaderboardUser(5, "Sarah_Foot", "🚀", "🇸🇳", 230, 5, 8, 1),
             PredictorLeaderboardUser(6, "Carlos_Madrid", "👑", "🇪🇸", 195, 4, 7, 0),
@@ -85,12 +146,25 @@ fun PredictionsScreen(
                         Text(
                             text = Strings.get("predictions_title", appLanguage),
                             fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp
+                            fontSize = 18.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 },
                 actions = {
-                    // Language Switcher
+                    if (onRefreshMatches != null) {
+                        IconButton(
+                            onClick = onRefreshMatches,
+                            modifier = Modifier.testTag("predictions_refresh_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Actualiser les matchs"
+                            )
+                        }
+                    }
+
                     IconButton(
                         onClick = onToggleLanguage,
                         modifier = Modifier.testTag("predictions_lang_toggle")
@@ -124,15 +198,15 @@ fun PredictionsScreen(
                 .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            // User Score Summary Header
             UserPointsHeader(
-                userPoints = userPoints,
-                userRank = leaderboardUsers.find { it.isUser }?.rank ?: userRank,
+                userPoints = evalStats.totalPoints,
+                userRank = leaderboardUsers.find { it.isUser }?.rank ?: 1,
                 predictionsCount = userPredictionCount,
+                accuracyLabel = evalStats.accuracyLabel,
+                streak = evalStats.streak,
                 appLanguage = appLanguage
             )
 
-            // Tabs Header
             TabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -146,7 +220,9 @@ fun PredictionsScreen(
                             Text(
                                 text = title,
                                 fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
-                                fontSize = 14.sp
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     )
@@ -158,22 +234,33 @@ fun PredictionsScreen(
                     matches = matches,
                     predictions = predictions,
                     onMakePrediction = onMakePrediction,
-                    appLanguage = appLanguage
+                    appLanguage = appLanguage,
+                    onMatchClick = onMatchClick,
+                    onRefreshMatches = onRefreshMatches
                 )
                 1 -> LeaderboardView(
-                    users = leaderboardUsers,
-                    appLanguage = appLanguage
+                    users = leaderboardUsers
                 )
             }
         }
     }
 }
 
+private data class QuadrupleStats(
+    val totalPoints: Int,
+    val finishedPredicted: Int,
+    val correctOutcomes: Int,
+    val accuracyLabel: String,
+    val streak: Int
+)
+
 @Composable
 private fun UserPointsHeader(
     userPoints: Int,
     userRank: Int,
     predictionsCount: Int,
+    accuracyLabel: String,
+    streak: Int,
     appLanguage: AppLanguage
 ) {
     Card(
@@ -202,7 +289,7 @@ private fun UserPointsHeader(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = Strings.get("rules_bonus", appLanguage),
                             fontSize = 11.sp,
@@ -218,10 +305,12 @@ private fun UserPointsHeader(
                         )
                     }
 
+                    Spacer(modifier = Modifier.width(8.dp))
+
                     Surface(
                         color = PrimaryGold.copy(alpha = 0.2f),
                         shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryGold)
+                        border = BorderStroke(1.dp, PrimaryGold)
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -250,12 +339,12 @@ private fun UserPointsHeader(
                     )
                     HeaderStatItem(
                         title = Strings.get("accuracy", appLanguage),
-                        value = if (predictionsCount > 0) "78%" else "75%",
+                        value = accuracyLabel,
                         icon = Icons.Default.PieChart
                     )
                     HeaderStatItem(
                         title = Strings.get("streak", appLanguage),
-                        value = "🔥 3",
+                        value = "🔥 $streak",
                         icon = Icons.Default.LocalFireDepartment
                     )
                 }
@@ -295,24 +384,147 @@ private fun MatchPredictionsList(
     matches: List<Match>,
     predictions: Map<String, UserMatchPrediction>,
     onMakePrediction: (matchId: String, choice: PredictionChoice, homeScore: Int, awayScore: Int) -> Unit,
-    appLanguage: AppLanguage
+    appLanguage: AppLanguage,
+    onMatchClick: ((Match) -> Unit)?,
+    onRefreshMatches: (() -> Unit)?
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(bottom = 24.dp)
-    ) {
-        items(matches, key = { it.id }) { match ->
-            PredictionCard(
-                match = match,
-                currentPrediction = predictions[match.id],
-                onMakePrediction = { choice, homeScore, awayScore ->
-                    onMakePrediction(match.id, choice, homeScore, awayScore)
-                },
-                appLanguage = appLanguage
-            )
+    var selectedFilter by remember { mutableStateOf(PredictionFilter.OPEN) }
+
+    val openMatches = remember(matches) {
+        matches.filter { it.status == MatchStatus.LIVE || it.status == MatchStatus.UPCOMING }
+    }
+    val liveMatches = remember(matches) { matches.filter { it.status == MatchStatus.LIVE } }
+    val realMatches = remember(matches) {
+        matches.filter {
+            it.homeTeam.contains("Real Madrid", ignoreCase = true) ||
+                it.awayTeam.contains("Real Madrid", ignoreCase = true)
+        }
+    }
+    val finishedMatches = remember(matches) { matches.filter { it.status == MatchStatus.FINISHED } }
+
+    val effectiveFilter = remember(selectedFilter, openMatches.size, matches.size) {
+        if (selectedFilter == PredictionFilter.OPEN && openMatches.isEmpty() && matches.isNotEmpty()) {
+            PredictionFilter.ALL
+        } else selectedFilter
+    }
+
+    val displayedMatches = remember(effectiveFilter, matches, openMatches, liveMatches, realMatches, finishedMatches) {
+        when (effectiveFilter) {
+            PredictionFilter.OPEN -> openMatches
+            PredictionFilter.LIVE -> liveMatches
+            PredictionFilter.REAL_MADRID -> realMatches
+            PredictionFilter.FINISHED -> finishedMatches
+            PredictionFilter.ALL -> matches
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                FilterChip(
+                    selected = effectiveFilter == PredictionFilter.OPEN,
+                    onClick = { selectedFilter = PredictionFilter.OPEN },
+                    label = { Text("Ouverts (${openMatches.size})", fontSize = 12.sp) }
+                )
+            }
+            item {
+                FilterChip(
+                    selected = effectiveFilter == PredictionFilter.LIVE,
+                    onClick = { selectedFilter = PredictionFilter.LIVE },
+                    label = { Text("🔴 En direct (${liveMatches.size})", fontSize = 12.sp) }
+                )
+            }
+            if (realMatches.isNotEmpty()) {
+                item {
+                    FilterChip(
+                        selected = effectiveFilter == PredictionFilter.REAL_MADRID,
+                        onClick = { selectedFilter = PredictionFilter.REAL_MADRID },
+                        label = { Text("👑 Real Madrid (${realMatches.size})", fontSize = 12.sp) }
+                    )
+                }
+            }
+            item {
+                FilterChip(
+                    selected = effectiveFilter == PredictionFilter.FINISHED,
+                    onClick = { selectedFilter = PredictionFilter.FINISHED },
+                    label = { Text("Terminés (${finishedMatches.size})", fontSize = 12.sp) }
+                )
+            }
+            item {
+                FilterChip(
+                    selected = effectiveFilter == PredictionFilter.ALL,
+                    onClick = { selectedFilter = PredictionFilter.ALL },
+                    label = { Text("Tous (${matches.size})", fontSize = 12.sp) }
+                )
+            }
+        }
+
+        if (displayedMatches.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SportsSoccer,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(36.dp)
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = if (matches.isEmpty()) {
+                                "Synchronisation des vrais matchs en cours..."
+                            } else {
+                                "Aucun match dans cette catégorie pour le moment."
+                            },
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        if (onRefreshMatches != null) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(onClick = onRefreshMatches) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Actualiser")
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(bottom = 24.dp)
+            ) {
+                items(displayedMatches, key = { it.id }) { match ->
+                    PredictionCard(
+                        match = match,
+                        currentPrediction = predictions[match.id],
+                        onMakePrediction = { choice, homeScore, awayScore ->
+                            onMakePrediction(match.id, choice, homeScore, awayScore)
+                        },
+                        onMatchClick = onMatchClick?.let { cb -> { cb(match) } },
+                        appLanguage = appLanguage
+                    )
+                }
+            }
         }
     }
 }
@@ -322,22 +534,50 @@ private fun PredictionCard(
     match: Match,
     currentPrediction: UserMatchPrediction?,
     onMakePrediction: (choice: PredictionChoice, homeScore: Int, awayScore: Int) -> Unit,
+    onMatchClick: (() -> Unit)?,
     appLanguage: AppLanguage
 ) {
-    var homeScoreInput by remember(currentPrediction) { mutableIntStateOf(currentPrediction?.predictedHomeScore ?: 2) }
-    var awayScoreInput by remember(currentPrediction) { mutableIntStateOf(currentPrediction?.predictedAwayScore ?: 1) }
+    var homeScoreInput by remember(match.id, currentPrediction) {
+        mutableIntStateOf(currentPrediction?.predictedHomeScore ?: 1)
+    }
+    var awayScoreInput by remember(match.id, currentPrediction) {
+        mutableIntStateOf(currentPrediction?.predictedAwayScore ?: 0)
+    }
 
     val isFinished = match.status == MatchStatus.FINISHED
+    val isLive = match.status == MatchStatus.LIVE
+
+    fun choiceFromScore(hs: Int, asScore: Int): PredictionChoice = when {
+        hs > asScore -> PredictionChoice.HOME_WIN
+        asScore > hs -> PredictionChoice.AWAY_WIN
+        else -> PredictionChoice.DRAW
+    }
+
+    val cardModifier = Modifier
+        .fillMaxWidth()
+        .testTag("prediction_card_${match.id}")
+        .let { base -> if (onMatchClick != null) base.clickable(onClick = onMatchClick) else base }
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("prediction_card_${match.id}"),
+        modifier = cardModifier,
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .let { base ->
+                        if (onMatchClick != null) {
+                            base
+                                .testTag("prediction_match_header_${match.id}")
+                                .clickable(onClick = onMatchClick)
+                        } else base
+                    }
+                    .padding(bottom = 4.dp)
+            ) {
             // Match Header info
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -353,70 +593,73 @@ private fun PredictionCard(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                if (match.status == MatchStatus.LIVE) {
-                    Surface(
-                        color = LiveRed.copy(alpha = 0.2f),
-                        shape = CircleShape
-                    ) {
-                        Text(
-                            text = "🔴 ${Strings.get("live_now", appLanguage)} ${match.minute}'",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = LiveRed,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    when {
+                        isLive -> LiveBadge(minute = match.minute)
+                        isFinished -> Text(
+                            text = "${Strings.get("finished", appLanguage)} • ${match.date}",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        else -> Text(
+                            text = "${match.date} • ${match.time}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
-                } else if (isFinished) {
-                    Text(
-                        text = Strings.get("finished", appLanguage),
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    Text(
-                        text = "${match.date} • ${match.time}",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+
+                    if (onMatchClick != null) {
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = "Ouvrir le match",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Teams display
+            // Teams & Score / VS display
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                // Home Team
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.weight(1f)
                 ) {
                     TeamLogo(url = match.homeTeamLogo, teamName = match.homeTeam, modifier = Modifier.size(44.dp))
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = match.homeTeam,
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
                         textAlign = TextAlign.Center,
-                        maxLines = 1
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                // Score or VS
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                ) {
                     if (match.status != MatchStatus.UPCOMING) {
-                        Text(
-                            text = "${match.homeScore} - ${match.awayScore}",
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.primary
+                        PulsingLiveScore(
+                            homeScore = match.homeScore,
+                            awayScore = match.awayScore,
+                            isLive = isLive,
+                            fontSize = 22.sp
                         )
                     } else {
                         Text(
@@ -428,99 +671,232 @@ private fun PredictionCard(
                     }
                 }
 
-                // Away Team
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.weight(1f)
                 ) {
                     TeamLogo(url = match.awayTeamLogo, teamName = match.awayTeam, modifier = Modifier.size(44.dp))
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = match.awayTeam,
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
                         textAlign = TextAlign.Center,
-                        maxLines = 1
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
-
-            Spacer(modifier = Modifier.height(14.dp))
-            Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Prediction Buttons (1 / N / 2)
-            Text(
-                text = Strings.get("predict_match", appLanguage),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // Home Win Button (1)
-                PredictionOptionButton(
-                    label = "1 (${match.homeTeam.take(8)})",
-                    odds = "1.95",
-                    isSelected = currentPrediction?.choice == PredictionChoice.HOME_WIN,
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        onMakePrediction(PredictionChoice.HOME_WIN, homeScoreInput, awayScoreInput)
-                    }
-                )
-
-                // Draw Button (N)
-                PredictionOptionButton(
-                    label = "N (${Strings.get("draw", appLanguage).take(3)})",
-                    odds = "3.20",
-                    isSelected = currentPrediction?.choice == PredictionChoice.DRAW,
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        onMakePrediction(PredictionChoice.DRAW, homeScoreInput, awayScoreInput)
-                    }
-                )
-
-                // Away Win Button (2)
-                PredictionOptionButton(
-                    label = "2 (${match.awayTeam.take(8)})",
-                    odds = "3.80",
-                    isSelected = currentPrediction?.choice == PredictionChoice.AWAY_WIN,
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        onMakePrediction(PredictionChoice.AWAY_WIN, homeScoreInput, awayScoreInput)
-                    }
-                )
             }
 
-            if (currentPrediction != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+            Spacer(modifier = Modifier.height(10.dp))
+
+            if (isFinished) {
+                FinishedPredictionSummary(
+                    match = match,
+                    currentPrediction = currentPrediction,
+                    appLanguage = appLanguage,
+                    onOpenMatch = onMatchClick
+                )
+            } else {
+                Text(
+                    text = Strings.get("predict_match", appLanguage),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
                 Spacer(modifier = Modifier.height(8.dp))
+
+                // Outcome 1 / N / 2 buttons with clear full labels (no broken .take(3) or "Côte" typo)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    PredictionOptionButton(
+                        badge = "1",
+                        label = match.homeTeam,
+                        pointsHint = "+50 pts",
+                        isSelected = currentPrediction?.choice == PredictionChoice.HOME_WIN,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("pred_btn_home_${match.id}"),
+                        onClick = {
+                            val adjustedHome = if (homeScoreInput <= awayScoreInput) awayScoreInput + 1 else homeScoreInput
+                            homeScoreInput = adjustedHome
+                            onMakePrediction(PredictionChoice.HOME_WIN, adjustedHome, awayScoreInput)
+                        }
+                    )
+
+                    PredictionOptionButton(
+                        badge = "N",
+                        label = Strings.get("draw", appLanguage),
+                        pointsHint = "+50 pts",
+                        isSelected = currentPrediction?.choice == PredictionChoice.DRAW,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("pred_btn_draw_${match.id}"),
+                        onClick = {
+                            val drawScore = maxOf(1, minOf(homeScoreInput, awayScoreInput))
+                            homeScoreInput = drawScore
+                            awayScoreInput = drawScore
+                            onMakePrediction(PredictionChoice.DRAW, drawScore, drawScore)
+                        }
+                    )
+
+                    PredictionOptionButton(
+                        badge = "2",
+                        label = match.awayTeam,
+                        pointsHint = "+50 pts",
+                        isSelected = currentPrediction?.choice == PredictionChoice.AWAY_WIN,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("pred_btn_away_${match.id}"),
+                        onClick = {
+                            val adjustedAway = if (awayScoreInput <= homeScoreInput) homeScoreInput + 1 else awayScoreInput
+                            awayScoreInput = adjustedAway
+                            onMakePrediction(PredictionChoice.AWAY_WIN, homeScoreInput, adjustedAway)
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Interactive Exact Score Stepper (+100 pts bonus)
                 Surface(
-                    color = LiveGlowGreen.copy(alpha = 0.15f),
-                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = LiveGlowGreen,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Pronostic enregistré avec succès ! (+50 pts potentiels)",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = LiveGlowGreen
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (appLanguage == AppLanguage.ENGLISH) "Exact Score" else "Score exact",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Bonus +100 pts",
+                                fontSize = 10.sp,
+                                color = PrimaryGold,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            ScoreStepperControl(
+                                score = homeScoreInput,
+                                decrementTag = "pred_home_minus_${match.id}",
+                                incrementTag = "pred_home_plus_${match.id}",
+                                onDecrement = {
+                                    if (homeScoreInput > 0) {
+                                        val nh = homeScoreInput - 1
+                                        homeScoreInput = nh
+                                        onMakePrediction(choiceFromScore(nh, awayScoreInput), nh, awayScoreInput)
+                                    }
+                                },
+                                onIncrement = {
+                                    if (homeScoreInput < 15) {
+                                        val nh = homeScoreInput + 1
+                                        homeScoreInput = nh
+                                        onMakePrediction(choiceFromScore(nh, awayScoreInput), nh, awayScoreInput)
+                                    }
+                                }
+                            )
+
+                            Text("-", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
+
+                            ScoreStepperControl(
+                                score = awayScoreInput,
+                                decrementTag = "pred_away_minus_${match.id}",
+                                incrementTag = "pred_away_plus_${match.id}",
+                                onDecrement = {
+                                    if (awayScoreInput > 0) {
+                                        val na = awayScoreInput - 1
+                                        awayScoreInput = na
+                                        onMakePrediction(choiceFromScore(homeScoreInput, na), homeScoreInput, na)
+                                    }
+                                },
+                                onIncrement = {
+                                    if (awayScoreInput < 15) {
+                                        val na = awayScoreInput + 1
+                                        awayScoreInput = na
+                                        onMakePrediction(choiceFromScore(homeScoreInput, na), homeScoreInput, na)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (currentPrediction != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    val choiceLabel = when (currentPrediction.choice) {
+                        PredictionChoice.HOME_WIN -> match.homeTeam
+                        PredictionChoice.DRAW -> Strings.get("draw", appLanguage)
+                        PredictionChoice.AWAY_WIN -> match.awayTeam
+                    }
+                    Surface(
+                        color = LiveGlowGreen.copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("prediction_saved_banner_${match.id}")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = LiveGlowGreen,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Pronostic enregistré : $choiceLabel (${currentPrediction.predictedHomeScore}-${currentPrediction.predictedAwayScore})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = LiveGlowGreen,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                if (onMatchClick != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = onMatchClick,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            modifier = Modifier.testTag("pred_open_match_${match.id}")
+                        ) {
+                            Icon(
+                                imageVector = if (isLive) Icons.Default.PlayCircle else Icons.Default.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (isLive) "Regarder le direct >" else "Fiche du match >",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
@@ -529,34 +905,157 @@ private fun PredictionCard(
 }
 
 @Composable
+private fun ScoreStepperControl(
+    score: Int,
+    decrementTag: String,
+    incrementTag: String,
+    onDecrement: () -> Unit,
+    onIncrement: () -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        FilledTonalIconButton(
+            onClick = onDecrement,
+            modifier = Modifier
+                .size(32.dp)
+                .testTag(decrementTag)
+        ) {
+            Icon(Icons.Default.Remove, contentDescription = "Moins", modifier = Modifier.size(14.dp))
+        }
+        Text(
+            text = "$score",
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 15.sp,
+            modifier = Modifier.padding(horizontal = 8.dp)
+        )
+        FilledTonalIconButton(
+            onClick = onIncrement,
+            modifier = Modifier
+                .size(32.dp)
+                .testTag(incrementTag)
+        ) {
+            Icon(Icons.Default.Add, contentDescription = "Plus", modifier = Modifier.size(14.dp))
+        }
+    }
+}
+
+@Composable
+private fun FinishedPredictionSummary(
+    match: Match,
+    currentPrediction: UserMatchPrediction?,
+    appLanguage: AppLanguage,
+    onOpenMatch: (() -> Unit)?
+) {
+    val actualChoice = when {
+        match.homeScore > match.awayScore -> PredictionChoice.HOME_WIN
+        match.awayScore > match.homeScore -> PredictionChoice.AWAY_WIN
+        else -> PredictionChoice.DRAW
+    }
+
+    if (currentPrediction != null) {
+        val isExact = currentPrediction.predictedHomeScore == match.homeScore &&
+            currentPrediction.predictedAwayScore == match.awayScore
+        val isCorrectOutcome = currentPrediction.choice == actualChoice
+
+        val (bgColor, textColor, summaryText) = when {
+            isExact -> Triple(
+                PrimaryGold.copy(alpha = 0.2f),
+                PrimaryGold,
+                "🏆 Score exact ! +150 pts (${currentPrediction.predictedHomeScore}-${currentPrediction.predictedAwayScore})"
+            )
+            isCorrectOutcome -> Triple(
+                LiveGlowGreen.copy(alpha = 0.16f),
+                LiveGlowGreen,
+                "✅ Bon pronostic ! +50 pts (${currentPrediction.predictedHomeScore}-${currentPrediction.predictedAwayScore})"
+            )
+            else -> Triple(
+                MaterialTheme.colorScheme.surfaceVariant,
+                MaterialTheme.colorScheme.onSurfaceVariant,
+                "Pronostic ${currentPrediction.predictedHomeScore}-${currentPrediction.predictedAwayScore} • Score final ${match.homeScore}-${match.awayScore}"
+            )
+        }
+
+        Surface(
+            color = bgColor,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = summaryText,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = textColor,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+            )
+        }
+    } else {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = if (appLanguage == AppLanguage.ENGLISH) {
+                    "Match finished • Predictions closed"
+                } else {
+                    "Match terminé • Pronostics clos"
+                },
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+            )
+        }
+    }
+
+    if (onOpenMatch != null) {
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onOpenMatch) {
+                Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("🎬 Voir Résumé Vidéo IA >", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
 private fun PredictionOptionButton(
+    badge: String,
     label: String,
-    odds: String,
+    pointsHint: String,
     isSelected: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     Surface(
         onClick = onClick,
-        modifier = modifier,
+        modifier = modifier.heightIn(min = 52.dp),
         shape = RoundedCornerShape(12.dp),
         color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-        border = if (isSelected) androidx.compose.foundation.BorderStroke(2.dp, PrimaryGold) else null
+        border = if (isSelected) BorderStroke(2.dp, PrimaryGold) else null
     ) {
         Column(
-            modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = label,
+                text = "$badge • $label",
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
             )
+            Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "Côte $odds",
+                text = pointsHint,
                 fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
                 color = if (isSelected) PrimaryGold else MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -565,8 +1064,7 @@ private fun PredictionOptionButton(
 
 @Composable
 private fun LeaderboardView(
-    users: List<PredictorLeaderboardUser>,
-    appLanguage: AppLanguage
+    users: List<PredictorLeaderboardUser>
 ) {
     LazyColumn(
         modifier = Modifier
@@ -576,15 +1074,14 @@ private fun LeaderboardView(
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
         items(users, key = { it.username }) { user ->
-            LeaderboardUserRow(user = user, appLanguage = appLanguage)
+            LeaderboardUserRow(user = user)
         }
     }
 }
 
 @Composable
 private fun LeaderboardUserRow(
-    user: PredictorLeaderboardUser,
-    appLanguage: AppLanguage
+    user: PredictorLeaderboardUser
 ) {
     val isTop3 = user.rank <= 3
     val rankBadgeColor = when (user.rank) {
@@ -613,7 +1110,6 @@ private fun LeaderboardUserRow(
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Rank Badge
             Surface(
                 shape = CircleShape,
                 color = rankBadgeColor,
@@ -631,7 +1127,6 @@ private fun LeaderboardUserRow(
 
             Spacer(modifier = Modifier.width(12.dp))
 
-            // User Info
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -660,13 +1155,12 @@ private fun LeaderboardUserRow(
                 Spacer(modifier = Modifier.height(2.dp))
 
                 Text(
-                    text = "${user.correctCount}/${user.totalPredictions} pronos exacts • Serie 🔥 ${user.streak}",
+                    text = "${user.correctCount}/${user.totalPredictions} pronos exacts • Série 🔥 ${user.streak}",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            // Points
             Column(horizontalAlignment = Alignment.End) {
                 Text(
                     text = "${user.points} pts",

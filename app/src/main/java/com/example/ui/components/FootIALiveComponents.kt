@@ -137,23 +137,37 @@ fun TeamLogo(
     teamName: String,
     modifier: Modifier = Modifier.size(36.dp)
 ) {
+    var loadFailed by remember(url, teamName) { mutableStateOf(false) }
+    val initials = remember(teamName) {
+        val parts = teamName.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        when {
+            parts.size >= 2 -> "${parts[0].first()}${parts[1].first()}".uppercase()
+            parts.isNotEmpty() -> parts[0].take(2).uppercase()
+            else -> "FC"
+        }
+    }
+
     Box(
         modifier = modifier
             .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f), CircleShape),
         contentAlignment = Alignment.Center
     ) {
-        if (url.isNotEmpty()) {
+        if (url.isNotBlank() && !loadFailed) {
             AsyncImage(
                 model = url,
                 contentDescription = "Logo $teamName",
-                modifier = Modifier.fillMaxSize()
+                onError = { loadFailed = true },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(3.dp)
             )
         } else {
             Text(
-                text = teamName.take(2).uppercase(),
-                fontWeight = FontWeight.Bold,
-                fontSize = 12.sp,
+                text = initials,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -189,19 +203,41 @@ fun LiveBadge(minute: Int) {
 
 @Composable
 fun StatusBadge(status: MatchStatus, minute: Int, date: String, time: String) {
+    val timeFr = if (time.contains("FR")) time else "$time (FR)"
     when (status) {
-        MatchStatus.LIVE -> LiveBadge(minute = minute)
+        MatchStatus.LIVE -> {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                LiveBadge(minute = minute)
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(
+                        text = timeFr,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
         MatchStatus.FINISHED -> {
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Text(
-                    text = "TERMINÉ",
+                    text = "TERMINÉ • $date • $timeFr",
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -211,11 +247,13 @@ fun StatusBadge(status: MatchStatus, minute: Int, date: String, time: String) {
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Text(
-                    text = "$date $time",
+                    text = "$date • $timeFr",
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -392,7 +430,58 @@ fun MatchCard(
                     )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (match.videoStreamUrl != null) {
+                    if (match.broadcastChannel != null) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Tv,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    modifier = Modifier.size(10.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = match.broadcastChannel,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    if (match.status == MatchStatus.FINISHED) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(10.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "RÉSUMÉ VIDÉO IA",
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                    } else if (match.videoStreamUrl != null) {
                         Surface(
                             color = LiveRed,
                             shape = RoundedCornerShape(6.dp)
@@ -419,7 +508,7 @@ fun MatchCard(
                         Spacer(modifier = Modifier.width(6.dp))
                     }
                     Text(
-                        text = "Visionner >",
+                        text = if (match.status == MatchStatus.FINISHED) "Voir Résumé >" else "Visionner >",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary

@@ -1,15 +1,15 @@
 package com.example.data.repository
 
 import android.content.Context
+import com.example.data.ai.AiMatchSearchState
+import com.example.data.ai.AiPostMatchVideoSummaryState
 import com.example.data.ai.GeminiCommentatorRepository
 import com.example.data.local.AppDatabase
 import com.example.data.model.*
 import com.example.data.network.FootballNewsApiService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.random.Random
 
 class FootballRepository(private val context: Context) {
 
@@ -22,6 +22,36 @@ class FootballRepository(private val context: Context) {
     // Live Matches State
     private val _matchesState = MutableStateFlow<List<Match>>(emptyList())
     val matchesState: StateFlow<List<Match>> = _matchesState.asStateFlow()
+
+    private val _isRefreshingMatches = MutableStateFlow<Boolean>(false)
+    val isRefreshingMatches: StateFlow<Boolean> = _isRefreshingMatches.asStateFlow()
+
+    private val _matchesSyncSummary = MutableStateFlow<String>("Scores et prochains matchs actualisés en direct !")
+    val matchesSyncSummary: StateFlow<String> = _matchesSyncSummary.asStateFlow()
+
+    // Mercato Intelligence (Le Parisien, Foot Mercato, Le Monde)
+    private val _mercatoNewsState = MutableStateFlow<List<MercatoNewsItem>>(emptyList())
+    val mercatoNewsState: StateFlow<List<MercatoNewsItem>> = _mercatoNewsState.asStateFlow()
+
+    private val _isMercatoLoading = MutableStateFlow<Boolean>(false)
+    val isMercatoLoading: StateFlow<Boolean> = _isMercatoLoading.asStateFlow()
+
+    private val _mercatoLastSync = MutableStateFlow<String>("Synchronisation en direct...")
+    val mercatoLastSync: StateFlow<String> = _mercatoLastSync.asStateFlow()
+
+    private val _geminiMercatoAnalysis = MutableStateFlow<String?>(null)
+    val geminiMercatoAnalysis: StateFlow<String?> = _geminiMercatoAnalysis.asStateFlow()
+
+    // Firebase AI Match Search & Filter State
+    private val _aiMatchSearchState = MutableStateFlow<AiMatchSearchState>(AiMatchSearchState.Idle)
+    val aiMatchSearchState: StateFlow<AiMatchSearchState> = _aiMatchSearchState.asStateFlow()
+    private var aiSearchJob: Job? = null
+
+    // Firebase AI Post-Match Video Highlights State
+    private val _postMatchVideoSummaryState = MutableStateFlow<AiPostMatchVideoSummaryState>(AiPostMatchVideoSummaryState.Idle)
+    val postMatchVideoSummaryState: StateFlow<AiPostMatchVideoSummaryState> = _postMatchVideoSummaryState.asStateFlow()
+    private val postMatchCache = mutableMapOf<String, AiPostMatchVideoSummaryState.Success>()
+
 
     // Standings State
     private val _standingsState = MutableStateFlow<Map<String, List<LeagueStanding>>>(emptyMap())
@@ -71,18 +101,45 @@ class FootballRepository(private val context: Context) {
     val predictionsState: StateFlow<Map<String, UserMatchPrediction>> = _predictionsState.asStateFlow()
 
     fun savePrediction(matchId: String, choice: PredictionChoice, homeScore: Int = 1, awayScore: Int = 0) {
+        val nowTs = System.currentTimeMillis()
         val currentMap = _predictionsState.value.toMutableMap()
         currentMap[matchId] = UserMatchPrediction(
             matchId = matchId,
             choice = choice,
             predictedHomeScore = homeScore,
-            predictedAwayScore = awayScore
+            predictedAwayScore = awayScore,
+            timestamp = nowTs
         )
         _predictionsState.value = currentMap
 
-        prefs.edit().putString("pred_choice_$matchId", choice.name).apply()
-        prefs.edit().putInt("pred_hs_$matchId", homeScore).apply()
-        prefs.edit().putInt("pred_as_$matchId", awayScore).apply()
+        prefs.edit()
+            .putString("pred_choice_$matchId", choice.name)
+            .putInt("pred_hs_$matchId", homeScore)
+            .putInt("pred_as_$matchId", awayScore)
+            .putLong("pred_ts_$matchId", nowTs)
+            .apply()
+    }
+
+    private fun loadSavedPredictionsFromPrefs(): Map<String, UserMatchPrediction> {
+        val restored = mutableMapOf<String, UserMatchPrediction>()
+        val allEntries = prefs.all
+        for ((key, value) in allEntries) {
+            if (!key.startsWith("pred_choice_") || value !is String) continue
+            val matchId = key.removePrefix("pred_choice_")
+            if (matchId.isBlank()) continue
+            val choice = runCatching { PredictionChoice.valueOf(value) }.getOrNull() ?: continue
+            val hs = prefs.getInt("pred_hs_$matchId", if (choice == PredictionChoice.AWAY_WIN) 0 else 1)
+            val asScore = prefs.getInt("pred_as_$matchId", if (choice == PredictionChoice.HOME_WIN) 0 else 1)
+            val ts = prefs.getLong("pred_ts_$matchId", System.currentTimeMillis())
+            restored[matchId] = UserMatchPrediction(
+                matchId = matchId,
+                choice = choice,
+                predictedHomeScore = hs,
+                predictedAwayScore = asScore,
+                timestamp = ts
+            )
+        }
+        return restored
     }
 
 
@@ -103,26 +160,160 @@ class FootballRepository(private val context: Context) {
     }
 
     private fun loadInitialData() {
-        _matchesState.value = generateSampleMatches()
+        // Restore persisted user predictions immediately
+        _predictionsState.value = loadSavedPredictionsFromPrefs()
+
+        // Never seed fake/invented matches: start empty in loading state and fetch real ESPN fixtures immediately
+        _matchesState.value = emptyList()
+        _isRefreshingMatches.value = true
+        _matchesSyncSummary.value = "Synchronisation des vrais matchs officiels en direct..."
         _standingsState.value = generateSampleStandings()
         _playersState.value = generateSamplePlayers()
         _newsState.value = generateSampleNews()
-        _newsSource.value = "Édition Spéciale FootIA"
-        
-        // Fetch real-time live headlines from public APIs
+        _newsSource.value = "Flux Directs & RSS"
+
+        // Fetch real-time live & upcoming matches, headlines, and mercato from live feeds
+        refreshRealMatchesFromApi()
         refreshNewsFromPublicApi()
-        
+        refreshMercatoNews()
+
         // Initial Notification
         val initialNotif = AppNotification(
             id = "notif_welcome",
-            matchId = "m1",
+            matchId = "espn_welcome",
             title = "⚽ Bienvenue sur FootIA Live !",
-            message = "Le commentateur IA TV est prêt à analyser vos matchs préférés d'Euro, Ligue 1, Premier League, LaLiga, CAN et Champions League.",
+            message = "Chargement des vrais matchs en direct et recherche intelligente par IA Gemini (heure française).",
             timestamp = getCurrentTimeString(),
             type = "DEBRIEF_IA"
         )
         _notificationsState.value = listOf(initialNotif)
     }
+
+    fun refreshRealMatchesFromApi() {
+        repositoryScope.launch {
+            _isRefreshingMatches.value = true
+            try {
+                val realMatches = FootballNewsApiService.fetchRealMatchesFromEspn()
+
+                if (realMatches.isNotEmpty()) {
+                    // Strictly real ESPN matches only — never inject or fall back to fake matches
+                    val deduped = promoteKickoffLiveMatches(
+                        realMatches.distinctBy { it.id },
+                        FootballNewsApiService.currentParisNowMillis()
+                    )
+                    _matchesState.value = deduped
+
+                    val upcomingCount = deduped.count { it.status == MatchStatus.UPCOMING }
+                    val liveCount = deduped.count { it.status == MatchStatus.LIVE }
+                    val leaguesCount = deduped.map { it.league }.distinct().size
+                    _matchesSyncSummary.value = "$liveCount en direct • $upcomingCount prochains matchs ($leaguesCount ligues) • ${getCurrentTimeString()}"
+
+                    val notif = AppNotification(
+                        id = "notif_matches_updated_${System.currentTimeMillis()}",
+                        matchId = deduped.firstOrNull()?.id ?: "",
+                        title = "⚽ Matchs officiels actualisés !",
+                        message = "$liveCount match(s) en direct et $upcomingCount prochains matchs synchronisés sur $leaguesCount compétitions.",
+                        timestamp = getCurrentTimeString(),
+                        type = "ACTU"
+                    )
+                    _notificationsState.value = listOf(notif) + _notificationsState.value
+                } else {
+                    _matchesSyncSummary.value = "Aucun match reçu — vérifiez la connexion et appuyez sur Actualiser (${getCurrentTimeString()})"
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _matchesSyncSummary.value = "Erreur réseau lors du chargement des matchs réels"
+            } finally {
+                delay(250)
+                _isRefreshingMatches.value = false
+            }
+        }
+    }
+
+    fun searchMatchesWithAI(query: String) {
+        val trimmed = query.trim()
+        aiSearchJob?.cancel()
+        if (trimmed.isEmpty()) {
+            _aiMatchSearchState.value = AiMatchSearchState.Idle
+            return
+        }
+        aiSearchJob = repositoryScope.launch {
+            _aiMatchSearchState.value = AiMatchSearchState.Loading(trimmed)
+            val result = aiRepository.searchAndFilterMatchesWithAI(trimmed, _matchesState.value)
+            _aiMatchSearchState.value = result
+        }
+    }
+
+    fun clearAiMatchSearch() {
+        aiSearchJob?.cancel()
+        _aiMatchSearchState.value = AiMatchSearchState.Idle
+    }
+
+    suspend fun analyzeFinishedMatchHighlightsWithAI(match: Match, forceRefresh: Boolean = false): AiPostMatchVideoSummaryState {
+        if (!forceRefresh) {
+            postMatchCache[match.id]?.let { cached ->
+                _postMatchVideoSummaryState.value = cached
+                return cached
+            }
+        }
+        _postMatchVideoSummaryState.value = AiPostMatchVideoSummaryState.Loading(match.id)
+        val result = aiRepository.filterFinishedMatchHighlightsWithAI(match)
+        if (result is AiPostMatchVideoSummaryState.Success) {
+            postMatchCache[match.id] = result
+        }
+        _postMatchVideoSummaryState.value = result
+        return result
+    }
+
+    fun refreshMercatoNews() {
+        repositoryScope.launch {
+            _isMercatoLoading.value = true
+            try {
+                val items = FootballNewsApiService.fetchMercatoNews()
+                if (items.isNotEmpty()) {
+                    _mercatoNewsState.value = items
+                    val hasLive = items.any { !it.id.startsWith("mercato_offline") }
+                    _mercatoLastSync.value = if (hasLive) {
+                        "En direct • Mis à jour à ${getCurrentTimeString()}"
+                    } else {
+                        "Hors-ligne • Appuyez sur Actualiser"
+                    }
+                    // Automatically keep Gemini synthesis aligned with fresh headlines
+                    val freshAnalysis = aiRepository.analyzeMercatoWithGemini(items, null)
+                    _geminiMercatoAnalysis.value = freshAnalysis
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                if (_mercatoNewsState.value.isEmpty()) {
+                    _mercatoNewsState.value = FootballNewsApiService.generateCuratedMercatoNews()
+                }
+                _mercatoLastSync.value = "Hors-ligne • Erreur de connexion"
+            } finally {
+                _isMercatoLoading.value = false
+            }
+        }
+    }
+
+    fun generateGeminiMercatoAnalysis(userQuery: String? = null) {
+        repositoryScope.launch {
+            _isMercatoLoading.value = true
+            try {
+                var currentItems = _mercatoNewsState.value
+                if (currentItems.isEmpty() || currentItems.all { it.id.startsWith("mercato_offline") }) {
+                    currentItems = FootballNewsApiService.fetchMercatoNews()
+                    _mercatoNewsState.value = currentItems
+                    _mercatoLastSync.value = "En direct • Mis à jour à ${getCurrentTimeString()}"
+                }
+                val analysis = aiRepository.analyzeMercatoWithGemini(currentItems, userQuery)
+                _geminiMercatoAnalysis.value = analysis
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                _isMercatoLoading.value = false
+            }
+        }
+    }
+
 
     fun refreshNewsFromPublicApi() {
         repositoryScope.launch {
@@ -157,124 +348,90 @@ class FootballRepository(private val context: Context) {
         }
     }
 
+    private fun promoteKickoffLiveMatches(matches: List<Match>, nowMillis: Long): List<Match> {
+        if (matches.isEmpty()) return matches
+        var changed = false
+        val updated = matches.map { m ->
+            val ko = m.kickoffMillis
+            if (ko > 0L && m.status == MatchStatus.UPCOMING && nowMillis in ko..(ko + 130L * 60_000L)) {
+                changed = true
+                val estMin = FootballNewsApiService.computeEstimatedLiveMinute(ko, nowMillis)
+                m.copy(
+                    status = MatchStatus.LIVE,
+                    minute = estMin,
+                    aiCommentaries = listOf(
+                        AICommentary(
+                            id = "c_live_${m.id}",
+                            minute = estMin,
+                            text = "⚡ COUP D'ENVOI (${estMin}') : ${m.homeTeam} ${m.homeScore} - ${m.awayScore} ${m.awayTeam} (${m.league}) est maintenant EN DIRECT !",
+                            tone = "INTENSE"
+                        )
+                    )
+                )
+            } else if (ko > 0L && m.status == MatchStatus.LIVE) {
+                val estMin = FootballNewsApiService.computeEstimatedLiveMinute(ko, nowMillis)
+                if (estMin > m.minute && m.minute < 90) {
+                    changed = true
+                    m.copy(minute = estMin)
+                } else m
+            } else {
+                m
+            }
+        }
+        return if (changed) {
+            updated.sortedWith(
+                compareBy<Match>(
+                    {
+                        when (it.status) {
+                            MatchStatus.LIVE -> 0
+                            MatchStatus.UPCOMING -> 1
+                            MatchStatus.FINISHED -> 2
+                        }
+                    },
+                    { if (it.status == MatchStatus.FINISHED) -it.kickoffMillis else it.kickoffMillis }
+                )
+            )
+        } else matches
+    }
+
     private fun startLiveSimulation() {
         repositoryScope.launch {
             while (isActive) {
-                delay(12000L) // Simulate live tick every 12 seconds
-                updateLiveMatchesTick()
-            }
-        }
-    }
-
-    private suspend fun updateLiveMatchesTick() {
-        val currentMatches = _matchesState.value.toMutableList()
-        var updated = false
-        val newNotifs = mutableListOf<AppNotification>()
-
-        for (i in currentMatches.indices) {
-            val m = currentMatches[i]
-            if (m.status == MatchStatus.LIVE) {
-                updated = true
-                val nextMinute = if (m.minute >= 90) 90 else m.minute + 1
-                var newHomeScore = m.homeScore
-                var newAwayScore = m.awayScore
-                val updatedEvents = m.events.toMutableList()
-                val updatedCommentaries = m.aiCommentaries.toMutableList()
-
-                // Random event trigger
-                val chance = Random.nextInt(100)
-                if (chance < 15 && nextMinute < 90) { // Goal event
-                    val isHome = Random.nextBoolean()
-                    val scorer = if (isHome) "K. Mbappé" else "E. Haaland"
-                    if (isHome) newHomeScore++ else newAwayScore++
-
-                    val goalEvent = MatchEvent(
-                        id = "ev_${System.currentTimeMillis()}",
-                        minute = nextMinute,
-                        type = EventType.GOAL,
-                        isHomeTeam = isHome,
-                        playerName = scorer,
-                        detail = "But spectaculaire !"
-                    )
-                    updatedEvents.add(0, goalEvent)
-
-                    // Generate live AI commentary
-                    val goalCommentary = aiRepository.generateLiveCommentary(
-                        m.copy(homeScore = newHomeScore, awayScore = newAwayScore),
-                        nextMinute,
-                        "BUT magistral inscrit par $scorer pour ${if (isHome) m.homeTeam else m.awayTeam} !"
-                    )
-                    updatedCommentaries.add(0, goalCommentary)
-
-                    // Add Notification
-                    newNotifs.add(
-                        AppNotification(
-                            id = "notif_${System.currentTimeMillis()}",
-                            matchId = m.id,
-                            title = "⚽ GOAL ! ${m.homeTeam} $newHomeScore - $newAwayScore ${m.awayTeam}",
-                            message = "$scorer marque à la ${nextMinute}e minute dans le match ${m.league} !",
-                            timestamp = getCurrentTimeString(),
-                            type = "BUT"
-                        )
-                    )
-                } else if (chance in 15..25 && nextMinute < 90) { // Yellow Card
-                    val isHome = Random.nextBoolean()
-                    val player = if (isHome) "A. Hakimi" else "R. Dias"
-                    val cardEvent = MatchEvent(
-                        id = "ev_${System.currentTimeMillis()}",
-                        minute = nextMinute,
-                        type = EventType.YELLOW_CARD,
-                        isHomeTeam = isHome,
-                        playerName = player,
-                        detail = "Anti-jeu / Tacle en retard"
-                    )
-                    updatedEvents.add(0, cardEvent)
-
-                    val cardCommentary = aiRepository.generateLiveCommentary(
-                        m,
-                        nextMinute,
-                        "Carton jaune distribué à $player par l'arbitre !"
-                    )
-                    updatedCommentaries.add(0, cardCommentary)
-                } else if (nextMinute % 15 == 0) { // Periodic AI Commentary
-                    val periodicCommentary = aiRepository.generateLiveCommentary(m, nextMinute)
-                    updatedCommentaries.add(0, periodicCommentary)
+                val nowBeforeDelay = FootballNewsApiService.currentParisNowMillis()
+                val promotedLocal = promoteKickoffLiveMatches(_matchesState.value, nowBeforeDelay)
+                if (promotedLocal !== _matchesState.value) {
+                    _matchesState.value = promotedLocal
                 }
 
-                val isFullTime = nextMinute >= 90
-                val newStatus = if (isFullTime) MatchStatus.FINISHED else MatchStatus.LIVE
+                val hasLiveOrImminent = _matchesState.value.any { m ->
+                    m.status == MatchStatus.LIVE ||
+                        (m.kickoffMillis > 0L && (m.kickoffMillis - nowBeforeDelay) in (-130L * 60_000L)..(15L * 60_000L))
+                }
+                delay(if (hasLiveOrImminent) 10_000L else 25_000L)
 
-                var aiSummary = m.aiSummary
-                if (isFullTime && aiSummary == null) {
-                    aiSummary = aiRepository.generateMatchSummary(m.copy(homeScore = newHomeScore, awayScore = newAwayScore, status = MatchStatus.FINISHED))
-                    newNotifs.add(
-                        AppNotification(
-                            id = "notif_ft_${System.currentTimeMillis()}",
-                            matchId = m.id,
-                            title = "🏁 Fin du Match: ${m.homeTeam} $newHomeScore - $newAwayScore ${m.awayTeam}",
-                            message = "Le débrief IA complet est maintenant disponible !",
-                            timestamp = getCurrentTimeString(),
-                            type = "FIN_MATCH"
-                        )
-                    )
+                val nowCheck = FootballNewsApiService.currentParisNowMillis()
+                val localTicked = promoteKickoffLiveMatches(_matchesState.value, nowCheck)
+                if (localTicked !== _matchesState.value) {
+                    _matchesState.value = localTicked
                 }
 
-                currentMatches[i] = m.copy(
-                    minute = nextMinute,
-                    homeScore = newHomeScore,
-                    awayScore = newAwayScore,
-                    status = newStatus,
-                    events = updatedEvents,
-                    aiCommentaries = updatedCommentaries,
-                    aiSummary = aiSummary
-                )
-            }
-        }
-
-        if (updated) {
-            _matchesState.value = currentMatches
-            if (newNotifs.isNotEmpty()) {
-                _notificationsState.value = newNotifs + _notificationsState.value
+                if (!_isRefreshingMatches.value) {
+                    try {
+                        val fresh = FootballNewsApiService.fetchRealMatchesFromEspn()
+                        if (fresh.isNotEmpty()) {
+                            val deduped = promoteKickoffLiveMatches(
+                                fresh.distinctBy { it.id },
+                                FootballNewsApiService.currentParisNowMillis()
+                            )
+                            _matchesState.value = deduped
+                            val liveCount = deduped.count { it.status == MatchStatus.LIVE }
+                            val upcomingCount = deduped.count { it.status == MatchStatus.UPCOMING }
+                            val leaguesCount = deduped.map { it.league }.distinct().size
+                            _matchesSyncSummary.value = "$liveCount en direct • $upcomingCount prochains matchs ($leaguesCount ligues) • ${getCurrentTimeString()}"
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
             }
         }
     }
@@ -291,7 +448,7 @@ class FootballRepository(private val context: Context) {
             }
 
             val newEvent = MatchEvent(
-                id = "manual_${System.currentTimeMillis()}",
+                id = "manual_${UUID.randomUUID().toString().take(8)}",
                 minute = m.minute,
                 type = eventType,
                 isHomeTeam = isHomeTeam,
@@ -308,13 +465,13 @@ class FootballRepository(private val context: Context) {
             }
 
             val newCommentary = AICommentary(
-                id = "comm_${System.currentTimeMillis()}",
+                id = "comm_${UUID.randomUUID().toString().take(8)}",
                 minute = m.minute,
                 text = commentaryText,
                 tone = "INTENSE"
             )
 
-            val updatedCommentaries = listOf(newCommentary) + m.aiCommentaries
+            val updatedCommentaries = (listOf(newCommentary) + m.aiCommentaries).distinctBy { it.id }
 
             matches[index] = m.copy(
                 homeScore = hScore,
@@ -393,341 +550,19 @@ class FootballRepository(private val context: Context) {
     }
 
     private fun getCurrentTimeString(): String {
-        val sdf = SimpleDateFormat("HH:mm", Locale.FRANCE)
-        return sdf.format(Date())
-    }
-
-    // --- Mock Data Generators ---
-    private fun generateSampleMatches(): List<Match> {
-        val stats1 = MatchStats(
-            possessionHome = 62, possessionAway = 38,
-            shotsHome = 14, shotsAway = 7,
-            shotsOnTargetHome = 6, shotsOnTargetAway = 2,
-            passesHome = 540, passesAway = 310,
-            passAccuracyHome = 89, passAccuracyAway = 78,
-            foulsHome = 9, foulsAway = 14,
-            yellowCardsHome = 1, yellowCardsAway = 3,
-            redCardsHome = 0, redCardsAway = 0,
-            offsidesHome = 2, offsidesAway = 1
-        )
-
-        val lineup1 = MatchLineup(
-            homeFormation = "4-3-3",
-            awayFormation = "4-2-3-1",
-            homeStarting11 = listOf(
-                PlayerLineup(1, "Donnarumma", "GK"),
-                PlayerLineup(2, "A. Hakimi", "RB", rating = 8.1f),
-                PlayerLineup(5, "Marquinhos", "CB", isCaptain = true),
-                PlayerLineup(51, "W. Pacho", "CB"),
-                PlayerLineup(25, "N. Mendes", "LB"),
-                PlayerLineup(17, "Vitinha", "CM", rating = 8.4f),
-                PlayerLineup(87, "J. Neves", "CM"),
-                PlayerLineup(8, "F. Ruiz", "CM"),
-                PlayerLineup(10, "O. Dembélé", "RW", rating = 7.9f),
-                PlayerLineup(29, "B. Barcola", "LW", rating = 8.7f),
-                PlayerLineup(9, "G. Ramos", "ST")
-            ),
-            awayStarting11 = listOf(
-                PlayerLineup(1, "Rulli", "GK"),
-                PlayerLineup(62, "Murillo", "RB"),
-                PlayerLineup(5, "Balerdi", "CB", isCaptain = true),
-                PlayerLineup(4, "Gigot", "CB"),
-                PlayerLineup(3, "Merlin", "LB"),
-                PlayerLineup(23, "Højbjerg", "CDM"),
-                PlayerLineup(19, "Kondogbia", "CDM"),
-                PlayerLineup(10, "Greenwood", "RM", rating = 7.6f),
-                PlayerLineup(11, "Harit", "CAM"),
-                PlayerLineup(44, "Henrique", "LM"),
-                PlayerLineup(9, "Wahi", "ST")
-            ),
-            homeSubstitutes = listOf(PlayerLineup(19, "Kang-in Lee", "CAM"), PlayerLineup(23, "R. Kolo Muani", "ST")),
-            awaySubstitutes = listOf(PlayerLineup(8, "Ounahi", "CM"), PlayerLineup(14, "Moumbagna", "ST"))
-        )
-
-        val events1 = listOf(
-            MatchEvent("e1", 38, EventType.GOAL, true, "B. Barcola", "Passe décisive de Vitinha"),
-            MatchEvent("e2", 54, EventType.YELLOW_CARD, false, "L. Balerdi", "Tacle appuyé"),
-            MatchEvent("e3", 67, EventType.GOAL, true, "O. Dembélé", "Frappe croisée du droit")
-        )
-
-        val commentaries1 = listOf(
-            AICommentary("c1", 67, "🔥 67' - BUT EXCEPTIONNEL D'OUSMANE DEMBÉLÉ ! Crochet dévastateur et frappe en pleine lucarne ! Le Parc des Princes chavire !", "INTENSE"),
-            AICommentary("c2", 58, "📊 58' - Le PSG accentue sa possession (64%). L'OM peine à sortir de son propre demi-terrain.", "ANALYTICAL"),
-            AICommentary("c3", 38, "⚽ 38' - BUT DE BRADLEY BARCOLA ! Un modèle de contre-attaque conclu avec sang-froid !", "INTENSE")
-        )
-
-        val m1 = Match(
-            id = "m1",
-            league = "Ligue 1",
-            homeTeam = "Paris SG",
-            homeTeamLogo = "https://media.api-sports.io/football/teams/85.png",
-            awayTeam = "Olympique de Marseille",
-            awayTeamLogo = "https://media.api-sports.io/football/teams/81.png",
-            homeScore = 2,
-            awayScore = 0,
-            minute = 72,
-            status = MatchStatus.LIVE,
-            date = "Aujourd'hui",
-            time = "20:45",
-            stadium = "Parc des Princes",
-            referee = "Clément Turpin",
-            stats = stats1,
-            events = events1,
-            lineup = lineup1,
-            aiCommentaries = commentaries1,
-            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-            videoThumbnailUrl = "https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=800&auto=format&fit=crop",
-            videoHighlights = listOf(
-                VideoHighlightMarker("hl1_1", 38, "⚽ But Barcola", "GOAL", 3),
-                VideoHighlightMarker("hl1_2", 54, "🟨 Tacle Balerdi", "FOUL", 7),
-                VideoHighlightMarker("hl1_3", 67, "⚽ But Dembélé", "GOAL", 11),
-                VideoHighlightMarker("hl1_4", 71, "🧤 Parade Donnarumma", "SAVE", 13)
-            )
-        )
-
-        val m2 = Match(
-            id = "m2",
-            league = "Premier League",
-            homeTeam = "Arsenal",
-            homeTeamLogo = "https://media.api-sports.io/football/teams/42.png",
-            awayTeam = "Manchester City",
-            awayTeamLogo = "https://media.api-sports.io/football/teams/50.png",
-            homeScore = 1,
-            awayScore = 1,
-            minute = 88,
-            status = MatchStatus.LIVE,
-            date = "Aujourd'hui",
-            time = "17:30",
-            stadium = "Emirates Stadium",
-            referee = "Michael Oliver",
-            stats = stats1.copy(possessionHome = 48, possessionAway = 52, shotsHome = 11, shotsAway = 13),
-            events = listOf(
-                MatchEvent("e10", 22, EventType.GOAL, false, "E. Haaland", "Tête puissante"),
-                MatchEvent("e11", 76, EventType.GOAL, true, "B. Saka", "Penalty transformé")
-            ),
-            lineup = lineup1,
-            aiCommentaries = listOf(
-                AICommentary("c10", 88, "⚡ 88' - Fin de match irrespirable à l'Emirates Stadium ! Les deux géants se rendent coup pour coup !", "INTENSE")
-            ),
-            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
-            videoThumbnailUrl = "https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800&auto=format&fit=crop",
-            videoHighlights = listOf(
-                VideoHighlightMarker("hl2_1", 22, "⚽ But Haaland", "GOAL", 2),
-                VideoHighlightMarker("hl2_2", 65, "🔥 Tir Foden", "CHANCE", 6),
-                VideoHighlightMarker("hl2_3", 76, "⚽ Penalty Saka", "GOAL", 10)
-            )
-        )
-
-        val m3 = Match(
-            id = "m3",
-            league = "LaLiga",
-            homeTeam = "Real Madrid",
-            homeTeamLogo = "https://media.api-sports.io/football/teams/541.png",
-            awayTeam = "FC Barcelone",
-            awayTeamLogo = "https://media.api-sports.io/football/teams/529.png",
-            homeScore = 3,
-            awayScore = 2,
-            minute = 90,
-            status = MatchStatus.FINISHED,
-            date = "Hier",
-            time = "21:00",
-            stadium = "Santiago Bernabéu",
-            referee = "Gil Manzano",
-            stats = stats1.copy(possessionHome = 51, possessionAway = 49),
-            events = listOf(
-                MatchEvent("e20", 12, EventType.GOAL, false, "L. Yamal", "Coup franc magistral"),
-                MatchEvent("e21", 34, EventType.GOAL, true, "Vini Jr.", "Raid solitaire"),
-                MatchEvent("e22", 61, EventType.GOAL, false, "R. Lewandowski", "Reprise de la tête"),
-                MatchEvent("e23", 85, EventType.GOAL, true, "J. Bellingham", "Frappe du plat du pied"),
-                MatchEvent("e24", 90, EventType.GOAL, true, "K. Mbappé", "Penalty de la victoire")
-            ),
-            lineup = lineup1,
-            aiCommentaries = listOf(
-                AICommentary("c20", 90, "🎉 90' - FIN DU MATCH ! Victoire épique du Real Madrid dans un Clasico d'antologie !", "INTENSE")
-            ),
-            aiSummary = "Un Clasico d'exception au Santiago Bernabéu ! Le Real Madrid s'impose 3-2 au terme d'un scénario à rebondissements avec des réalisations signées Vinícius Jr, Bellingham et le but vainqueur sur penalty de Mbappé.",
-            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
-            videoThumbnailUrl = "https://images.unsplash.com/photo-1522778119026-d647f0596c20?w=800&auto=format&fit=crop",
-            videoHighlights = listOf(
-                VideoHighlightMarker("hl3_1", 12, "⚽ Coup franc Yamal", "GOAL", 2),
-                VideoHighlightMarker("hl3_2", 34, "⚽ Slalom Vini Jr", "GOAL", 5),
-                VideoHighlightMarker("hl3_3", 85, "⚽ But Bellingham", "GOAL", 8),
-                VideoHighlightMarker("hl3_4", 90, "⚽ Penalty Mbappé", "GOAL", 12)
-            )
-        )
-
-        val m4 = Match(
-            id = "m4",
-            league = "CAN",
-            homeTeam = "Sénégal",
-            homeTeamLogo = "https://flagcdn.com/w160/sn.png",
-            awayTeam = "Côte d'Ivoire",
-            awayTeamLogo = "https://flagcdn.com/w160/ci.png",
-            homeScore = 1,
-            awayScore = 0,
-            minute = 45,
-            status = MatchStatus.LIVE,
-            date = "Aujourd'hui",
-            time = "21:00",
-            stadium = "Stade Léopold Sédar Senghor",
-            referee = "Mustapha Ghorbal",
-            stats = stats1.copy(possessionHome = 55, possessionAway = 45),
-            events = listOf(
-                MatchEvent("e30", 28, EventType.GOAL, true, "Sadio Mané", "Reprise de volée")
-            ),
-            lineup = lineup1,
-            aiCommentaries = listOf(
-                AICommentary("c30", 45, "🌍 45' - Mi-temps ! Le Sénégal mène 1-0 grâce à une bicyclette sensationnelle de Sadio Mané !", "INTENSE")
-            ),
-            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyBlazes.mp4",
-            videoThumbnailUrl = "https://images.unsplash.com/photo-1518091043644-c1d4457512c6?w=800&auto=format&fit=crop",
-            videoHighlights = listOf(
-                VideoHighlightMarker("hl4_1", 28, "⚽ Volée Sadio Mané", "GOAL", 3),
-                VideoHighlightMarker("hl4_2", 41, "🔥 Tête Haller", "CHANCE", 8)
-            )
-        )
-
-        val m5 = Match(
-            id = "m5",
-            league = "Ligue des Champions",
-            homeTeam = "Bayern Munich",
-            homeTeamLogo = "https://media.api-sports.io/football/teams/157.png",
-            awayTeam = "Inter Milan",
-            awayTeamLogo = "https://media.api-sports.io/football/teams/505.png",
-            homeScore = 2,
-            awayScore = 1,
-            minute = 64,
-            status = MatchStatus.LIVE,
-            date = "Aujourd'hui",
-            time = "21:00",
-            stadium = "Allianz Arena",
-            referee = "Szymon Marciniak",
-            stats = stats1.copy(possessionHome = 60, possessionAway = 40, shotsHome = 15, shotsAway = 8),
-            events = listOf(
-                MatchEvent("e50", 17, EventType.GOAL, true, "H. Kane", "Pique par dessus le gardien"),
-                MatchEvent("e51", 49, EventType.GOAL, false, "Lautaro Martínez", "Tir puissant petit filet"),
-                MatchEvent("e52", 61, EventType.GOAL, true, "J. Musiala", "Festival dans la surface")
-            ),
-            lineup = lineup1,
-            aiCommentaries = listOf(
-                AICommentary("c50", 64, "⭐ 64' - Choc européen grandiose ! Le Bayern reprend l'avantage grâce à un exploit de Musiala !", "INTENSE")
-            ),
-            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4",
-            videoThumbnailUrl = "https://images.unsplash.com/photo-1511886929837-354d827aae26?w=800&auto=format&fit=crop",
-            videoHighlights = listOf(
-                VideoHighlightMarker("hl5_1", 17, "⚽ Piqué Kane", "GOAL", 2),
-                VideoHighlightMarker("hl5_2", 49, "⚽ Égalisation Lautaro", "GOAL", 6),
-                VideoHighlightMarker("hl5_3", 61, "⚽ Festival Musiala", "GOAL", 10)
-            )
-        )
-
-        val m6 = Match(
-            id = "m6",
-            league = "Euro / Ligue des Nations",
-            homeTeam = "France",
-            homeTeamLogo = "https://flagcdn.com/w160/fr.png",
-            awayTeam = "Espagne",
-            awayTeamLogo = "https://flagcdn.com/w160/es.png",
-            homeScore = 2,
-            awayScore = 1,
-            minute = 81,
-            status = MatchStatus.LIVE,
-            date = "Aujourd'hui",
-            time = "21:00",
-            stadium = "Allianz Arena, Munich",
-            referee = "Clément Turpin",
-            stats = stats1.copy(possessionHome = 52, possessionAway = 48, shotsHome = 12, shotsAway = 10),
-            events = listOf(
-                MatchEvent("e60", 24, EventType.GOAL, false, "Lamine Yamal", "Superbe enroulé du gauche"),
-                MatchEvent("e61", 52, EventType.GOAL, true, "K. Mbappé", "Penalty en force"),
-                MatchEvent("e62", 78, EventType.GOAL, true, "A. Griezmann", "Reprise de volée")
-            ),
-            lineup = lineup1,
-            aiCommentaries = listOf(
-                AICommentary("c60", 78, "🇪🇺 78' - BUT FABULEUX POUR LA FRANCE ! Antoine Griezmann reprend de volée un centre millimétré ! 2-1 pour les Bleus !", "INTENSE")
-            ),
-            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-            videoThumbnailUrl = "https://images.unsplash.com/photo-1551958219-acbc608c6377?w=800&auto=format&fit=crop",
-            videoHighlights = listOf(
-                VideoHighlightMarker("hl6_1", 24, "⚽ Enroulé Yamal", "GOAL", 2),
-                VideoHighlightMarker("hl6_2", 52, "⚽ Penalty Mbappé", "GOAL", 7),
-                VideoHighlightMarker("hl6_3", 78, "⚽ Volée Griezmann", "GOAL", 12)
-            )
-        )
-
-        val m7 = Match(
-            id = "m7",
-            league = "Bundesliga",
-            homeTeam = "Borussia Dortmund",
-            homeTeamLogo = "https://media.api-sports.io/football/teams/165.png",
-            awayTeam = "Bayer Leverkusen",
-            awayTeamLogo = "https://media.api-sports.io/football/teams/168.png",
-            homeScore = 2,
-            awayScore = 2,
-            minute = 75,
-            status = MatchStatus.LIVE,
-            date = "Aujourd'hui",
-            time = "18:30",
-            stadium = "Signal Iduna Park",
-            referee = "Felix Brych",
-            stats = stats1.copy(possessionHome = 47, possessionAway = 53, shotsHome = 14, shotsAway = 16),
-            events = listOf(
-                MatchEvent("e70", 14, EventType.GOAL, true, "J. Brandt", "Frappe tendue"),
-                MatchEvent("e71", 38, EventType.GOAL, false, "F. Wirtz", "Plein axe lucarne"),
-                MatchEvent("e72", 59, EventType.GOAL, false, "V. Boniface", "Renard des surfaces"),
-                MatchEvent("e73", 72, EventType.GOAL, true, "S. Guirassy", "Tête puissante")
-            ),
-            lineup = lineup1,
-            aiCommentaries = listOf(
-                AICommentary("c70", 75, "🇩🇪 75' - Ambiance de feu au Signal Iduna Park ! Égalisation de Guirassy face au champion Leverkusen !", "INTENSE")
-            ),
-            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
-            videoThumbnailUrl = "https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=800&auto=format&fit=crop",
-            videoHighlights = listOf(
-                VideoHighlightMarker("hl7_1", 14, "⚽ But Brandt", "GOAL", 2),
-                VideoHighlightMarker("hl7_2", 38, "⚽ Bijou Wirtz", "GOAL", 5),
-                VideoHighlightMarker("hl7_3", 72, "⚽ Tête Guirassy", "GOAL", 10)
-            )
-        )
-
-        val m8 = Match(
-            id = "m8",
-            league = "Serie A",
-            homeTeam = "Inter Milan",
-            homeTeamLogo = "https://media.api-sports.io/football/teams/505.png",
-            awayTeam = "AC Milan",
-            awayTeamLogo = "https://media.api-sports.io/football/teams/489.png",
-            homeScore = 2,
-            awayScore = 1,
-            minute = 83,
-            status = MatchStatus.LIVE,
-            date = "Aujourd'hui",
-            time = "20:45",
-            stadium = "San Siro, Milan",
-            referee = "Daniele Orsato",
-            stats = stats1.copy(possessionHome = 53, possessionAway = 47, shotsHome = 13, shotsAway = 11),
-            events = listOf(
-                MatchEvent("e80", 22, EventType.GOAL, true, "M. Thuram", "Frappe lourde"),
-                MatchEvent("e81", 44, EventType.GOAL, false, "R. Leão", "Accélération foudroyante"),
-                MatchEvent("e82", 79, EventType.GOAL, true, "N. Barella", "Demi-volée magique")
-            ),
-            lineup = lineup1,
-            aiCommentaries = listOf(
-                AICommentary("c80", 83, "🇮🇹 83' - Derby della Madonnina incandescent ! Barella redonne l'avantage aux Nerazzurri !", "INTENSE")
-            ),
-            videoStreamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
-            videoThumbnailUrl = "https://images.unsplash.com/photo-1489944440615-453fc2b6a9a9?w=800&auto=format&fit=crop",
-            videoHighlights = listOf(
-                VideoHighlightMarker("hl8_1", 22, "⚽ Frappe Thuram", "GOAL", 3),
-                VideoHighlightMarker("hl8_2", 44, "⚽ Raid Leão", "GOAL", 7),
-                VideoHighlightMarker("hl8_3", 79, "⚽ Volée Barella", "GOAL", 11)
-            )
-        )
-
-        return listOf(m1, m2, m3, m4, m5, m6, m7, m8)
+        return FootballNewsApiService.getCurrentParisTimeFormatted()
     }
 
     private fun generateSampleStandings(): Map<String, List<LeagueStanding>> {
+        val ligueEuropa = listOf(
+            LeagueStanding(1, "Lazio Rome", "https://media.api-sports.io/football/teams/487.png", 6, 5, 1, 0, 14, 4, +10, 16, listOf("W","W","W","D","W")),
+            LeagueStanding(2, "Tottenham", "https://media.api-sports.io/football/teams/47.png", 6, 4, 1, 1, 13, 6, +7, 13, listOf("W","W","L","D","W")),
+            LeagueStanding(3, "Olympique Lyonnais", "https://media.api-sports.io/football/teams/80.png", 6, 4, 1, 1, 12, 6, +6, 13, listOf("W","L","W","W","D")),
+            LeagueStanding(4, "Manchester United", "https://media.api-sports.io/football/teams/33.png", 6, 3, 3, 0, 11, 7, +4, 12, listOf("D","D","W","W","D")),
+            LeagueStanding(5, "Athletic Bilbao", "https://media.api-sports.io/football/teams/531.png", 6, 3, 2, 1, 9, 5, +4, 11, listOf("W","D","W","L","W")),
+            LeagueStanding(6, "AS Roma", "https://media.api-sports.io/football/teams/497.png", 6, 3, 1, 2, 8, 6, +2, 10, listOf("L","W","W","D","L"))
+        )
+
         val euro = listOf(
             LeagueStanding(1, "Espagne", "https://flagcdn.com/w160/es.png", 3, 3, 0, 0, 8, 1, +7, 9, listOf("W","W","W")),
             LeagueStanding(2, "France", "https://flagcdn.com/w160/fr.png", 3, 2, 1, 0, 5, 2, +3, 7, listOf("W","D","W")),
@@ -775,6 +610,26 @@ class FootballRepository(private val context: Context) {
             LeagueStanding(4, "Maroc", "https://flagcdn.com/w160/ma.png", 3, 2, 1, 0, 7, 1, +6, 7, listOf("W","W","D"))
         )
 
+        val rsl = listOf(
+            LeagueStanding(1, "Al Hilal SFC", "https://media.api-sports.io/football/teams/345.png", 22, 19, 3, 0, 68, 18, +50, 60, listOf("W","W","W","W","D")),
+            LeagueStanding(2, "Al Nassr FC (C. Ronaldo)", "https://media.api-sports.io/football/teams/347.png", 22, 17, 2, 3, 62, 23, +39, 53, listOf("W","W","W","L","W")),
+            LeagueStanding(3, "Al Ahli Saudi (Mahrez)", "https://media.api-sports.io/football/teams/348.png", 22, 14, 4, 4, 48, 22, +26, 46, listOf("W","D","W","W","D")),
+            LeagueStanding(4, "Al Ittihad (Benzema)", "https://media.api-sports.io/football/teams/346.png", 22, 13, 3, 6, 45, 27, +18, 42, listOf("L","W","W","W","L")),
+            LeagueStanding(5, "Al Shabab FC", "https://media.api-sports.io/football/teams/349.png", 22, 10, 5, 7, 36, 29, +7, 35, listOf("D","W","L","W","W")),
+            LeagueStanding(6, "Al Qadsiah FC", "https://media.api-sports.io/football/teams/350.png", 22, 10, 4, 8, 31, 28, +3, 34, listOf("W","L","D","W","L"))
+        )
+
+        val qualifCan = listOf(
+            LeagueStanding(1, "Côte d'Ivoire (Gr. C)", "https://flagcdn.com/w160/ci.png", 2, 2, 0, 0, 5, 1, +4, 6, listOf("W","W")),
+            LeagueStanding(2, "Gambie (Gr. C)", "https://flagcdn.com/w160/gm.png", 2, 2, 0, 0, 5, 2, +3, 6, listOf("W","W")),
+            LeagueStanding(3, "Ghana (Gr. C)", "https://flagcdn.com/w160/gh.png", 2, 0, 0, 2, 1, 3, -2, 0, listOf("L","L")),
+            LeagueStanding(4, "Somalie (Gr. C)", "https://flagcdn.com/w160/so.png", 2, 0, 0, 2, 0, 5, -5, 0, listOf("L","L")),
+            LeagueStanding(5, "Maroc (Gr. B)", "https://flagcdn.com/w160/ma.png", 4, 4, 0, 0, 14, 1, +13, 12, listOf("W","W","W","W")),
+            LeagueStanding(6, "Sénégal (Gr. L)", "https://flagcdn.com/w160/sn.png", 4, 3, 1, 0, 8, 1, +7, 10, listOf("W","W","D","W")),
+            LeagueStanding(7, "Algérie (Gr. E)", "https://flagcdn.com/w160/dz.png", 4, 3, 1, 0, 9, 2, +7, 10, listOf("W","D","W","W")),
+            LeagueStanding(8, "Cameroun (Gr. J)", "https://flagcdn.com/w160/cm.png", 4, 2, 2, 0, 5, 2, +3, 8, listOf("D","W","D","W"))
+        )
+
         val matchAmicaux = listOf(
             LeagueStanding(1, "Brésil", "https://flagcdn.com/w160/br.png", 5, 4, 1, 0, 12, 4, +8, 13, listOf("W","W","D","W","W")),
             LeagueStanding(2, "Real Madrid", "https://media.api-sports.io/football/teams/541.png", 5, 4, 0, 1, 14, 5, +9, 12, listOf("W","W","W","L","W")),
@@ -783,15 +638,20 @@ class FootballRepository(private val context: Context) {
         )
 
         return mapOf(
+            "Qualifications CAN 2027" to qualifCan,
+            "RSL (Saudi Pro League)" to rsl,
+            "Qualifications CAN" to qualifCan,
             "Matchs Amicaux" to matchAmicaux,
-            "Euro" to euro,
+            "Ligue Europa" to ligueEuropa,
+            "Ligue des Champions" to ligue1.take(4),
             "Ligue 1" to ligue1,
             "Premier League" to premierLeague,
             "LaLiga" to laLiga,
             "Bundesliga" to bundesliga,
             "Serie A" to serieA,
             "CAN" to can,
-            "Ligue des Champions" to ligue1.take(4)
+            "Euro" to euro,
+            "Euro / Ligue des Nations" to euro
         )
     }
 
@@ -805,7 +665,7 @@ class FootballRepository(private val context: Context) {
                 position = "Attaquant",
                 nationality = "France 🇫🇷",
                 age = 27,
-                photoUrl = "https://media.api-sports.io/football/players/278.png",
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/9/95/Kylian_Mbappe_France_v_Senegal_16_June_2026-391_%28cropped%29.jpg/330px-Kylian_Mbappe_France_v_Senegal_16_June_2026-391_%28cropped%29.jpg",
                 goals = 28,
                 assists = 9,
                 matches = 29,
@@ -831,7 +691,7 @@ class FootballRepository(private val context: Context) {
                 position = "Avant-Centre",
                 nationality = "Norvège 🇳🇴",
                 age = 25,
-                photoUrl = "https://media.api-sports.io/football/players/1100.png",
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/43/Erling_Haaland_Morocco_v_Norway_7_June_2026-51.jpg/330px-Erling_Haaland_Morocco_v_Norway_7_June_2026-51.jpg",
                 goals = 31,
                 assists = 4,
                 matches = 27,
@@ -857,7 +717,7 @@ class FootballRepository(private val context: Context) {
                 position = "Ailier Gauche",
                 nationality = "Brésil 🇧🇷",
                 age = 25,
-                photoUrl = "https://media.api-sports.io/football/players/645.png",
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/10/Vin%C3%ADcius_J%C3%BAnior_Brazil_V_Morocco_13_June_2026-207_%28cropped%29.jpg/330px-Vin%C3%ADcius_J%C3%BAnior_Brazil_V_Morocco_13_June_2026-207_%28cropped%29.jpg",
                 goals = 21,
                 assists = 14,
                 matches = 30,
@@ -883,7 +743,7 @@ class FootballRepository(private val context: Context) {
                 position = "Ailier Droit",
                 nationality = "Espagne 🇪🇸",
                 age = 18,
-                photoUrl = "https://media.api-sports.io/football/players/358315.png",
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/13/Lamine_Yamal_France_v_Spain_7.24.26-142.jpg/330px-Lamine_Yamal_France_v_Spain_7.24.26-142.jpg",
                 goals = 14,
                 assists = 18,
                 matches = 32,
@@ -909,7 +769,7 @@ class FootballRepository(private val context: Context) {
                 position = "Attaquant",
                 nationality = "Nigeria 🇳🇬",
                 age = 27,
-                photoUrl = "https://media.api-sports.io/football/players/48.png",
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/3/34/Victor-osimhen-nigeria-2024-3-4.jpg/330px-Victor-osimhen-nigeria-2024-3-4.jpg",
                 goals = 22,
                 assists = 6,
                 matches = 25,
@@ -935,7 +795,7 @@ class FootballRepository(private val context: Context) {
                 position = "Milieu Offensif",
                 nationality = "Angleterre 🏴󠁧󠁢󠁥󠁮󠁧󠁿",
                 age = 22,
-                photoUrl = "https://media.api-sports.io/football/players/152982.png",
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/2/23/Jude_Bellingham_England_v_Ghana_23_June_2026-061_%28cropped%29.jpg/330px-Jude_Bellingham_England_v_Ghana_23_June_2026-061_%28cropped%29.jpg",
                 goals = 19,
                 assists = 12,
                 matches = 31,
@@ -961,7 +821,7 @@ class FootballRepository(private val context: Context) {
                 position = "Meneur de Jeu",
                 nationality = "Belgique 🇧🇪",
                 age = 34,
-                photoUrl = "https://media.api-sports.io/football/players/629.png",
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/40/Kevin_De_Bruyne_USMNT_v_Belgium_Mar_28_2026-64_%28cropped%29.jpg/330px-Kevin_De_Bruyne_USMNT_v_Belgium_Mar_28_2026-64_%28cropped%29.jpg",
                 goals = 10,
                 assists = 22,
                 matches = 26,
@@ -987,7 +847,7 @@ class FootballRepository(private val context: Context) {
                 position = "Ailier Droit",
                 nationality = "Égypte 🇪🇬",
                 age = 33,
-                photoUrl = "https://media.api-sports.io/football/players/306.png",
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a6/Mohamed_Salah_Argentina_v_Egypt_7_July_2026-163_%28cropped%29.jpg/330px-Mohamed_Salah_Argentina_v_Egypt_7_July_2026-163_%28cropped%29.jpg",
                 goals = 25,
                 assists = 15,
                 matches = 32,
@@ -1013,7 +873,7 @@ class FootballRepository(private val context: Context) {
                 position = "Latéral Droit",
                 nationality = "Maroc 🇲🇦",
                 age = 27,
-                photoUrl = "https://media.api-sports.io/football/players/85.png",
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/3/36/Achraf_Hakimi_Morocco_v_Norway_7_June_2026-32.jpg/330px-Achraf_Hakimi_Morocco_v_Norway_7_June_2026-32.jpg",
                 goals = 8,
                 assists = 11,
                 matches = 30,
@@ -1039,7 +899,7 @@ class FootballRepository(private val context: Context) {
                 position = "Milieu Défensif",
                 nationality = "Espagne 🇪🇸",
                 age = 29,
-                photoUrl = "https://media.api-sports.io/football/players/643.png",
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/7a/Rodri_Argentina_v_Spain_19_July_2026-187_%28cropped%29.jpg/330px-Rodri_Argentina_v_Spain_19_July_2026-187_%28cropped%29.jpg",
                 goals = 8,
                 assists = 9,
                 matches = 33,
@@ -1065,7 +925,7 @@ class FootballRepository(private val context: Context) {
                 position = "Milieu Offensif",
                 nationality = "Angleterre 🏴󠁧󠁢󠁥󠁮󠁧󠁿",
                 age = 23,
-                photoUrl = "https://media.api-sports.io/football/players/162685.png",
+                photoUrl = "https://upload.wikimedia.org/wikipedia/commons/f/fb/Cole_Palmer_2025_FIFA_Club_World_Cup_Final.jpg",
                 goals = 22,
                 assists = 13,
                 matches = 31,
@@ -1082,6 +942,32 @@ class FootballRepository(private val context: Context) {
                 successfulDribbles = 65,
                 recoveries = 46,
                 minutesPlayed = 2640
+            ),
+            PlayerProfile(
+                id = "p12",
+                name = "Khvicha Kvaratskhelia",
+                team = "Napoli / Paris SG",
+                teamLogo = "https://media.api-sports.io/football/teams/492.png",
+                position = "Ailier Gauche",
+                nationality = "Géorgie 🇬🇪",
+                age = 25,
+                photoUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/4a/Kvaratskhelia_asse_psg_2425.png/330px-Kvaratskhelia_asse_psg_2425.png",
+                goals = 16,
+                assists = 12,
+                matches = 28,
+                rating = 8.5f,
+                marketValue = "90M €",
+                bio = "Kvaradona : dribbles imprévisibles, accélérations foudroyantes et grande créativité sur le flanc gauche.",
+                speed = 89, shooting = 84, passing = 82, dribbling = 91, defense = 41, physical = 75,
+                expectedGoals = 14.2f,
+                expectedAssists = 10.5f,
+                keyPasses = 64,
+                duelsWon = 142,
+                duelsWonPct = 53,
+                shotsOnTarget = 42,
+                successfulDribbles = 88,
+                recoveries = 39,
+                minutesPlayed = 2410
             )
         )
     }

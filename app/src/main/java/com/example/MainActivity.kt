@@ -2,6 +2,7 @@ package com.example
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -44,6 +45,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureAppCheck(this, intent)
         enableEdgeToEdge()
 
         setContent {
@@ -57,6 +59,14 @@ class MainActivity : ComponentActivity() {
             val news by repository.newsState.collectAsStateWithLifecycle()
             val isNewsLoading by repository.isNewsLoading.collectAsStateWithLifecycle()
             val newsSource by repository.newsSource.collectAsStateWithLifecycle()
+            val isRefreshingMatches by repository.isRefreshingMatches.collectAsStateWithLifecycle()
+            val matchesSyncSummary by repository.matchesSyncSummary.collectAsStateWithLifecycle()
+            val mercatoNews by repository.mercatoNewsState.collectAsStateWithLifecycle()
+            val isMercatoLoading by repository.isMercatoLoading.collectAsStateWithLifecycle()
+            val mercatoLastSync by repository.mercatoLastSync.collectAsStateWithLifecycle()
+            val geminiMercatoAnalysis by repository.geminiMercatoAnalysis.collectAsStateWithLifecycle()
+            val aiMatchSearchState by repository.aiMatchSearchState.collectAsStateWithLifecycle()
+            val postMatchSummaryState by repository.postMatchVideoSummaryState.collectAsStateWithLifecycle()
             val notifications by repository.notificationsState.collectAsStateWithLifecycle()
             val favoriteTeams by repository.favoriteTeams.collectAsStateWithLifecycle(initialValue = emptyList())
             val currentApiKey by repository.footballApiKey.collectAsStateWithLifecycle()
@@ -80,6 +90,7 @@ class MainActivity : ComponentActivity() {
             var currentNavScreen by remember { mutableStateOf<NavScreen>(NavScreen.Home) }
             var selectedLeagueFilter by remember { mutableStateOf("Toutes") }
             var selectedMatchDetail by remember { mutableStateOf<Match?>(null) }
+            var pendingAiMatchSearchQuery by remember { mutableStateOf<String?>(null) }
 
             var showDeploymentDialog by remember { mutableStateOf(false) }
             var showNotificationsDialog by remember { mutableStateOf(false) }
@@ -156,10 +167,15 @@ class MainActivity : ComponentActivity() {
                                                 onAskAI = { question, lang -> repository.askMatchAI(currentMatch.id, question, lang) },
                                                 onGenerateDebrief = { lang -> repository.generateFreshDebrief(currentMatch.id, lang) },
                                                 onGenerateLiveCommentary = { m, min, prompt, lang -> repository.generateLiveCommentary(m, min, prompt, lang) },
+                                                postMatchSummaryState = postMatchSummaryState,
+                                                onAnalyzeFinishedHighlights = { m -> repository.analyzeFinishedMatchHighlightsWithAI(m) },
                                                 isDarkTheme = isDarkTheme,
                                                 onToggleTheme = { toggleTheme() }
                                             )
                                         } else {
+                                            BackHandler(enabled = currentNavScreen != NavScreen.Home) {
+                                                currentNavScreen = NavScreen.Home
+                                            }
                                             when (currentNavScreen) {
                                                 NavScreen.Home -> HomeScreen(
                                                     matches = matches,
@@ -177,7 +193,21 @@ class MainActivity : ComponentActivity() {
                                                     isDarkTheme = isDarkTheme,
                                                     onToggleTheme = { toggleTheme() },
                                                     appLanguage = appLanguage,
-                                                    onToggleLanguage = { toggleLanguage() }
+                                                    onToggleLanguage = { toggleLanguage() },
+                                                    isRefreshingMatches = isRefreshingMatches,
+                                                    matchesSyncSummary = matchesSyncSummary,
+                                                    onRefreshMatches = {
+                                                        repository.refreshRealMatchesFromApi()
+                                                        repository.refreshMercatoNews()
+                                                    },
+                                                    onSearchMatchesWithAI = { query ->
+                                                        val trimmed = query.trim()
+                                                        if (trimmed.isNotEmpty()) {
+                                                            pendingAiMatchSearchQuery = trimmed
+                                                            repository.searchMatchesWithAI(trimmed)
+                                                            currentNavScreen = NavScreen.Matches
+                                                        }
+                                                    }
                                                 )
 
                                                 NavScreen.Matches -> MatchesScreen(
@@ -188,8 +218,16 @@ class MainActivity : ComponentActivity() {
                                                             repository.addManualEventToMatch(matchId, eventType, player, isHome)
                                                         }
                                                     },
+                                                    isRefreshingMatches = isRefreshingMatches,
+                                                    matchesSyncSummary = matchesSyncSummary,
+                                                    onRefreshMatches = { repository.refreshRealMatchesFromApi() },
                                                     isDarkTheme = isDarkTheme,
-                                                    onToggleTheme = { toggleTheme() }
+                                                    onToggleTheme = { toggleTheme() },
+                                                    aiMatchSearchState = aiMatchSearchState,
+                                                    onSearchMatchesWithAI = { query -> repository.searchMatchesWithAI(query) },
+                                                    onClearAiMatchSearch = { repository.clearAiMatchSearch() },
+                                                    externalSearchQuery = pendingAiMatchSearchQuery,
+                                                    onExternalSearchConsumed = { pendingAiMatchSearchQuery = null }
                                                 )
 
                                                 NavScreen.Predictions -> PredictionsScreen(
@@ -201,7 +239,9 @@ class MainActivity : ComponentActivity() {
                                                     appLanguage = appLanguage,
                                                     onToggleLanguage = { toggleLanguage() },
                                                     isDarkTheme = isDarkTheme,
-                                                    onToggleTheme = { toggleTheme() }
+                                                    onToggleTheme = { toggleTheme() },
+                                                    onMatchClick = { selectedMatchDetail = it },
+                                                    onRefreshMatches = { repository.refreshRealMatchesFromApi() }
                                                 )
 
                                                 NavScreen.Standings -> StandingsScreen(
@@ -226,9 +266,15 @@ class MainActivity : ComponentActivity() {
                                                 NavScreen.News -> NewsAndPlayersScreen(
                                                     newsList = news,
                                                     playersList = players,
+                                                    mercatoList = mercatoNews,
+                                                    geminiAnalysis = geminiMercatoAnalysis,
                                                     isNewsLoading = isNewsLoading,
+                                                    isMercatoLoading = isMercatoLoading,
                                                     newsSource = newsSource,
+                                                    mercatoLastSync = mercatoLastSync,
                                                     onRefreshNews = { repository.refreshNewsFromPublicApi() },
+                                                    onRefreshMercato = { repository.refreshMercatoNews() },
+                                                    onAnalyzeMercato = { query -> repository.generateGeminiMercatoAnalysis(query) },
                                                     isDarkTheme = isDarkTheme,
                                                     onToggleTheme = { toggleTheme() }
                                                 )

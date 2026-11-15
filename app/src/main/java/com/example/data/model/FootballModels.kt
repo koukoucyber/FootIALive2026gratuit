@@ -97,7 +97,9 @@ data class Match(
     val aiSummary: String? = null,
     val videoStreamUrl: String? = null,
     val videoThumbnailUrl: String? = null,
-    val videoHighlights: List<VideoHighlightMarker> = emptyList()
+    val videoHighlights: List<VideoHighlightMarker> = emptyList(),
+    val broadcastChannel: String? = null,
+    val kickoffMillis: Long = 0L
 )
 
 data class LeagueStanding(
@@ -201,4 +203,29 @@ data class PredictorLeaderboardUser(
     val streak: Int,
     val isUser: Boolean = false
 )
+
+data class MercatoNewsItem(
+    val id: String,
+    val source: String, // "Le Parisien", "Foot Mercato", "Le Monde"
+    val sourceLogo: String = "",
+    val title: String,
+    val playerOrClub: String,
+    val transferType: String, // "Rumeur", "Négociations", "Officiel", "Prolongation"
+    val estimatedFee: String, // "70 M€", "Prêt avec OA", "Libre", "25 M€"
+    val reliabilityIndex: Int, // 0 to 100
+    val summary: String,
+    val publishedAt: String,
+    val url: String = "",
+    val imageUrl: String = "https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=800",
+    val geminiInsight: String = ""
+)
+
+data class MercatoGeminiAnalysis(
+    val summary: String,
+    val topRumors: List<String>,
+    val verifiedTrends: List<String>,
+    val financialAnalysis: String,
+    val confidenceScore: Int
+)
+
 

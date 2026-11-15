@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import com.example.data.ai.AiPostMatchVideoSummaryState
 import com.example.data.ai.CommentaryLanguage
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,7 +52,9 @@ fun LiveScoreAndCommentaryFeed(
     selectedLanguageCode: String = "fr",
     onLanguageSelected: ((String) -> Unit)? = null,
     onSimulateEvent: ((type: String) -> Unit)? = null,
-    onAskCommentator: (suspend (question: String) -> String)? = null
+    onAskCommentator: (suspend (question: String) -> String)? = null,
+    postMatchSummaryState: AiPostMatchVideoSummaryState = AiPostMatchVideoSummaryState.Idle,
+    onRetryPostMatchAnalysis: (() -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
     var selectedFilter by remember { mutableStateOf("Tous") }
@@ -64,214 +67,250 @@ fun LiveScoreAndCommentaryFeed(
         CommentaryLanguage.values().map { Triple(it.code, it.displayName, it.flagEmoji) }
     }
 
-    val filters = listOf("Tous", "⚽ Buts", "🔥 Moments Forts", "🧠 Tactique")
+    val filters = listOf("Tous", "🔥 Clash Ya2ne", "⚽ Buts", "🔥 Moments Forts", "🧠 Tactique")
 
     val filteredCommentaries = remember(commentaries, selectedFilter) {
         when (selectedFilter) {
+            "🔥 Clash Ya2ne" -> commentaries.filter { it.tone == "YA2NE" || it.text.contains("TCHIEEEEY", ignoreCase = true) || it.text.contains("Uber", ignoreCase = true) }
             "⚽ Buts" -> commentaries.filter { it.text.contains("BUT", ignoreCase = true) || it.tone == "GOAL" || it.tone == "CELEBRATION" }
-            "🔥 Moments Forts" -> commentaries.filter { it.tone == "INTENSE" || it.tone == "EXCITED" || it.tone == "GOAL" }
+            "🔥 Moments Forts" -> commentaries.filter { it.tone == "INTENSE" || it.tone == "EXCITED" || it.tone == "GOAL" || it.tone == "YA2NE" }
             "🧠 Tactique" -> commentaries.filter { it.tone == "TACTIQUE" || it.tone == "ANALYTICAL" || it.text.contains("tactique", ignoreCase = true) }
             else -> commentaries
         }
     }
 
-    Column(
+    val distinctCommentaries = remember(filteredCommentaries) {
+        filteredCommentaries.distinctBy { it.id }
+    }
+
+    LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .testTag("live_score_commentary_feed"),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // 1. Vrai Lecteur Vidéo de Match en Direct avec Statistiques HUD en Superposition
-        RealMatchVideoPlayer(
-            match = match,
-            allMatches = allMatches,
-            onSelectMatch = onSelectMatch
-        )
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // 2. En-tête du composant dédié au flux IA
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        // 1. Bandeau TV Style Télévision en Haut de l'Écran (Flux de Commentaires IA Direct)
+        item(key = "tv_broadcast_bar") {
+            TvBroadcastCommentaryBar(
+                match = match,
+                commentaries = commentaries,
+                onAskCommentator = onAskCommentator,
+                onSimulateEvent = onSimulateEvent
             )
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.horizontalGradient(
-                                        listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary)
-                                    )
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AutoAwesome,
-                                contentDescription = "Flux IA",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Flux Commentaires IA TV",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Analyse en temps réel par Gemini Live",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+        }
 
-                    // On-air Badge
-                    Surface(
-                        color = LiveRed.copy(alpha = 0.15f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, LiveRed.copy(alpha = 0.5f)),
-                        shape = RoundedCornerShape(20.dp)
+        // 2. Vrai Lecteur Vidéo de Match en Direct avec Statistiques HUD en Superposition
+        item(key = "real_match_video_player_card") {
+            RealMatchVideoPlayer(
+                match = match,
+                allMatches = allMatches,
+                onSelectMatch = onSelectMatch,
+                postMatchSummaryState = postMatchSummaryState,
+                onRetryPostMatchAnalysis = onRetryPostMatchAnalysis
+            )
+        }
+
+        // 2b. Graphique circulaire interactif de la possession de balle en direct
+        item(key = "live_possession_donut") {
+            LivePossessionPieChartCard(
+                match = match,
+                compact = true
+            )
+        }
+
+        // 3. En-tête du composant dédié au flux IA
+        item(key = "ai_commentary_header") {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.GraphicEq,
-                                contentDescription = "Audio Stream",
-                                tint = LiveRed,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "EN DIRECT",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = LiveRed
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary)
+                                        )
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = "Flux IA",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Flux Commentaires IA TV",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Analyse en temps réel par Gemini Live",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // On-air Badge
+                        Surface(
+                            color = LiveRed.copy(alpha = 0.15f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, LiveRed.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(20.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.GraphicEq,
+                                    contentDescription = "Audio Stream",
+                                    tint = LiveRed,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "EN DIRECT",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = LiveRed
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Language Selection Selector Bar
+                    Text(
+                        text = "Langue du commentaire IA (Google Translate - ${languages.size} langues) :",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        contentPadding = PaddingValues(horizontal = 2.dp)
+                    ) {
+                        items(languages) { (code, label, flag) ->
+                            val isSelected = selectedLanguageCode == code
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { onLanguageSelected?.invoke(code) },
+                                label = { Text("$flag $label", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier.testTag("lang_chip_$code")
                             )
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                // Language Selection Selector Bar
-                Text(
-                    text = "Langue du commentaire IA (Google Translate - ${languages.size} langues) :",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    contentPadding = PaddingValues(horizontal = 2.dp)
-                ) {
-                    items(languages) { (code, label, flag) ->
-                        val isSelected = selectedLanguageCode == code
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { onLanguageSelected?.invoke(code) },
-                            label = { Text("$flag $label", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
-                            shape = RoundedCornerShape(16.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            ),
-                            modifier = Modifier.testTag("lang_chip_$code")
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Filter Chips
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    filters.forEach { filter ->
-                        FilterChip(
-                            selected = selectedFilter == filter,
-                            onClick = { selectedFilter = filter },
-                            label = { Text(filter, fontSize = 11.sp, fontWeight = FontWeight.SemiBold) },
-                            shape = RoundedCornerShape(20.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                    // Filter Chips (Horizontally scrollable to prevent clipping/wrapping on phones)
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(filters) { filter ->
+                            FilterChip(
+                                selected = selectedFilter == filter,
+                                onClick = { selectedFilter = filter },
+                                label = { Text(filter, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
+                                shape = RoundedCornerShape(20.dp),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // 3. Question à l'IA en direct
+        // 4. Question à l'IA en direct
         if (onAskCommentator != null) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = userQuestion,
-                        onValueChange = { userQuestion = it },
-                        placeholder = { Text("Interroger le commentateur IA...", fontSize = 12.sp) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("ai_feed_question_input"),
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp)
+            item(key = "ask_commentator_bar") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    IconButton(
-                        onClick = {
-                            if (userQuestion.isNotBlank() && !isAsking) {
-                                val q = userQuestion
-                                userQuestion = ""
-                                isAsking = true
-                                coroutineScope.launch {
-                                    val ans = onAskCommentator(q)
-                                    chatHistory = listOf(q to ans) + chatHistory
-                                    isAsking = false
-                                }
-                            }
-                        },
-                        enabled = userQuestion.isNotBlank() && !isAsking,
+                ) {
+                    Row(
                         modifier = Modifier
-                            .clip(CircleShape)
-                            .background(if (userQuestion.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
-                            .testTag("ai_feed_send_button")
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (isAsking) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-                        } else {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Envoyer", tint = if (userQuestion.isNotBlank()) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        OutlinedTextField(
+                            value = userQuestion,
+                            onValueChange = { userQuestion = it },
+                            placeholder = { Text("Interroger le commentateur IA...", fontSize = 12.sp) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("ai_feed_question_input"),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        IconButton(
+                            onClick = {
+                                if (userQuestion.isNotBlank() && !isAsking) {
+                                    val q = userQuestion
+                                    userQuestion = ""
+                                    isAsking = true
+                                    coroutineScope.launch {
+                                        val ans = onAskCommentator(q)
+                                        chatHistory = listOf(q to ans) + chatHistory
+                                        isAsking = false
+                                    }
+                                }
+                            },
+                            enabled = userQuestion.isNotBlank() && !isAsking,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(if (userQuestion.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                                .testTag("ai_feed_send_button")
+                        ) {
+                            if (isAsking) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                            } else {
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Envoyer", tint = if (userQuestion.isNotBlank()) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 }
@@ -280,34 +319,46 @@ fun LiveScoreAndCommentaryFeed(
 
         // Questions & Réponses en direct
         if (chatHistory.isNotEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                chatHistory.take(2).forEach { (q, a) ->
-                    Card(
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f))
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Text(text = "❓ $q", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(text = "🎙️ $a", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSecondaryContainer)
+            item(key = "chat_history_block") {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    chatHistory.take(2).forEach { (q, a) ->
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f))
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(text = "❓ $q", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(text = "🎙️ $a", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                            }
                         }
                     }
                 }
             }
         }
 
-        // 4. Flux de Commentaires IA en Direct (Liste défilante)
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
+        // 5. Flux de Commentaires IA en Direct
+        if (distinctCommentaries.isEmpty()) {
+            item(key = "empty_commentary") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                ) {
+                    Text(
+                        text = "Aucun commentaire pour ce filtre actuellement.",
+                        modifier = Modifier.padding(16.dp),
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
             items(
-                items = filteredCommentaries,
+                items = distinctCommentaries,
                 key = { it.id }
             ) { commentary ->
                 DedicatedAICommentaryItemCard(
@@ -599,8 +650,8 @@ fun RealTimeScoreHeaderCard(
                         label = { Text("⚽ But ${match.awayTeam}", fontSize = 11.sp) }
                     )
                     AssistChip(
-                        onClick = { onSimulateEvent("ACTION") },
-                        label = { Text("🔥 Tir / Occasion", fontSize = 11.sp) }
+                        onClick = { onSimulateEvent("YA2NE_DRIBBLE") },
+                        label = { Text("😱 Dribble Humiliant (Ya2ne)", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF4500)) }
                     )
                 }
             }
@@ -618,6 +669,7 @@ fun DedicatedAICommentaryItemCard(
     onToggleAudio: () -> Unit
 ) {
     val toneColor = when (commentary.tone) {
+        "YA2NE" -> Color(0xFFFF4500)
         "GOAL", "CELEBRATION" -> LiveGlowGreen
         "INTENSE", "EXCITED" -> LiveRed
         "TACTIQUE", "ANALYTICAL" -> MaterialTheme.colorScheme.tertiary
@@ -625,6 +677,7 @@ fun DedicatedAICommentaryItemCard(
     }
 
     val toneLabel = when (commentary.tone) {
+        "YA2NE" -> "🔥 CLASH TCHIEEEEY !"
         "GOAL" -> "⚽ BUT"
         "CELEBRATION" -> "🎉 CELEBRATION"
         "INTENSE" -> "🔥 INTENSE"

@@ -1,18 +1,58 @@
 package com.example.data.ai
 
-import com.example.BuildConfig
+import android.util.Log
 import com.example.data.model.AICommentary
+import com.example.data.model.EventType
 import com.example.data.model.Match
+import com.example.data.model.MatchStatus
+import com.example.data.model.MercatoNewsItem
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.Schema
+import com.google.firebase.ai.type.generationConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 import kotlin.random.Random
+
+private const val TAG = "GeminiFootIA"
+
+sealed interface AiMatchSearchState {
+    data object Idle : AiMatchSearchState
+    data class Loading(val query: String) : AiMatchSearchState
+    data class Success(
+        val query: String,
+        val matchingIds: List<String>,
+        val explanation: String,
+        val suggestedLeague: String? = null,
+        val suggestedStatus: String = "ALL"
+    ) : AiMatchSearchState
+
+    data class Error(val query: String, val message: String) : AiMatchSearchState
+}
+
+data class AiVideoHighlightClip(
+    val minute: Int,
+    val category: String,
+    val title: String,
+    val reason: String,
+    val timestampSeconds: Int
+)
+
+sealed interface AiPostMatchVideoSummaryState {
+    data object Idle : AiPostMatchVideoSummaryState
+    data class Loading(val matchId: String) : AiPostMatchVideoSummaryState
+    data class Success(
+        val matchId: String,
+        val summaryHeadline: String,
+        val clips: List<AiVideoHighlightClip>
+    ) : AiPostMatchVideoSummaryState
+
+    data class Error(val matchId: String, val message: String) : AiPostMatchVideoSummaryState
+}
 
 enum class CommentaryLanguage(val code: String, val displayName: String, val flagEmoji: String, val promptInstruction: String) {
     FRENCH("fr", "Français", "🇫🇷", "en français"),
@@ -50,26 +90,316 @@ enum class CommentaryLanguage(val code: String, val displayName: String, val fla
 
     companion object {
         fun fromCode(code: String): CommentaryLanguage {
-            return values().find { it.code == code } ?: FRENCH
+            return entries.find { it.code == code } ?: FRENCH
         }
     }
 }
 
 class GeminiCommentatorRepository {
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .build()
+    private val matchSearchSchema by lazy {
+        Schema.obj(
+            properties = mapOf(
+                "matchingIds" to Schema.array(
+                    items = Schema.string(),
+                    description = "Ordered list of exact Match IDs matching the user's request"
+                ),
+                "suggestedLeague" to Schema.string(
+                    description = "Detected league name from the matches or 'Toutes'",
+                    nullable = true
+                ),
+                "suggestedStatus" to Schema.enumeration(
+                    values = listOf("ALL", "LIVE", "UPCOMING", "FINISHED"),
+                    description = "Detected match status filter"
+                ),
+                "aiExplanation" to Schema.string(
+                    description = "Short 1-sentence French summary explaining which matches were found and why"
+                )
+            ),
+            optionalProperties = listOf("suggestedLeague")
+        )
+    }
 
-    private val apiKey: String = try {
-        BuildConfig.GEMINI_API_KEY
-    } catch (e: Exception) {
-        ""
+    private val textModel by lazy {
+        Firebase.ai.generativeModel("gemini-3.8-flash")
+    }
+
+    private val postMatchHighlightsSchema by lazy {
+        Schema.obj(
+            properties = mapOf(
+                "summaryHeadline" to Schema.string(
+                    description = "Concise 1-sentence French recap of the finished match score and turning points"
+                ),
+                "clips" to Schema.array(
+                    items = Schema.obj(
+                        properties = mapOf(
+                            "minute" to Schema.integer(description = "Match minute (1..120)"),
+                            "category" to Schema.enumeration(
+                                values = listOf("GOAL", "RED_CARD", "YELLOW_CARD", "KEY_ACTION"),
+                                description = "Must be GOAL for goals or RED_CARD/YELLOW_CARD/KEY_ACTION for critical match actions"
+                            ),
+                            "title" to Schema.string(description = "Short French clip title (e.g. 'But de Kylian Mbappé')"),
+                            "reason" to Schema.string(description = "Brief explanation why this moment was decisive in the match"),
+                            "timestampSeconds" to Schema.integer(description = "Video reel seek offset in seconds (0..14)")
+                        )
+                    ),
+                    description = "Filtered list of ONLY goals and key turning-point actions ordered chronologically"
+                )
+            )
+        )
+    }
+
+    private val matchSearchModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = matchSearchSchema
+            }
+        )
+    }
+
+    private val postMatchSummaryModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = postMatchHighlightsSchema
+            }
+        )
     }
 
     /**
-     * Generates dynamic TV commentary for a live match action in the specified language (French, English, Arabic, Malinké).
+     * Uses Firebase AI Logic (Gemini) with structured JSON output to intelligently search and filter
+     * the real matches catalog by natural language (team, country, competition, French kickoff hour,
+     * live status, derby, scoreline, broadcaster, or regional football intent).
+     */
+    suspend fun searchAndFilterMatchesWithAI(
+        query: String,
+        matches: List<Match>
+    ): AiMatchSearchState = withContext(Dispatchers.IO) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return@withContext AiMatchSearchState.Idle
+        if (matches.isEmpty()) {
+            return@withContext AiMatchSearchState.Error(
+                query = trimmed,
+                message = "Aucun match réel n'est chargé pour le moment. Appuyez sur Actualiser puis relancez la recherche IA."
+            )
+        }
+
+        val catalogText = buildMatchCatalogForAi(matches)
+        val validIds = matches.map { it.id }.toSet()
+
+        val prompt = """
+            Tu es le moteur de recherche et de filtrage intelligent de FootIA Live.
+            L'utilisateur recherche ou filtre des matchs réels avec la requête : "$trimmed".
+
+            Analyse uniquement la liste réelle des matchs ci-dessous (tous les horaires sont déjà en heure locale française Europe/Paris) :
+            $catalogText
+
+            Règles strictes :
+            - Retourne dans matchingIds UNIQUEMENT des identifiants exacts présents dans la liste ci-dessus, classés du plus pertinent au moins pertinent.
+            - Comprends les surnoms, pays, régions et intentions en langage naturel : ex. "Real" -> Real Madrid, "Barça" -> Barcelona, "PSG" -> Paris SG, "Éléphants" -> Côte d'Ivoire, "Les Bleus" -> France, "ce soir" / "après 20h" -> matchs d'aujourd'hui avec heure >= 20:00 (FR), "en direct" -> LIVE, "Afrique" / "CAN" -> sélections africaines ou Qualifications CAN, "avec buts" -> total buts > 0, "gros matchs" -> affiches entre grands clubs/sélections ou matchs à buts.
+            - Ne fabrique jamais de match ni d'identifiant absent de la liste. Si aucun match ne correspond vraiment, renvoie matchingIds = [] et explique clairement pourquoi en français dans aiExplanation.
+        """.trimIndent()
+
+        try {
+            val response = withTimeout(45_000L) {
+                matchSearchModel.generateContent(prompt)
+            }
+            val jsonString = response.text?.takeIf { it.isNotBlank() }
+                ?: return@withContext AiMatchSearchState.Error(
+                    query = trimmed,
+                    message = "Le modèle IA a renvoyé une réponse vide."
+                )
+
+            parseAiMatchSearchJson(trimmed, jsonString, validIds)
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "AI match search timed out", e)
+            AiMatchSearchState.Error(
+                query = trimmed,
+                message = "Délai dépassé lors du filtrage IA Gemini. Veuillez réessayer."
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Firebase AI match search failed", e)
+            AiMatchSearchState.Error(
+                query = trimmed,
+                message = e.localizedMessage ?: "Échec de la recherche IA Gemini."
+            )
+        }
+    }
+
+    internal fun buildMatchCatalogForAi(matches: List<Match>): String {
+        return matches.take(120).joinToString("\n") { m ->
+            val statusStr = when (m.status) {
+                MatchStatus.LIVE -> "LIVE (${m.minute}')"
+                MatchStatus.UPCOMING -> "UPCOMING"
+                MatchStatus.FINISHED -> "FINISHED"
+            }
+            val scoreStr = if (m.status == MatchStatus.UPCOMING) "vs" else "${m.homeScore}-${m.awayScore}"
+            val channel = m.broadcastChannel ?: "TV"
+            "${m.id} | ${m.league} | ${m.homeTeam} $scoreStr ${m.awayTeam} | $statusStr | ${m.date} ${m.time} | ${m.stadium} | $channel"
+        }
+    }
+
+    internal fun parseAiMatchSearchJson(
+        query: String,
+        jsonString: String,
+        validIds: Set<String>
+    ): AiMatchSearchState {
+        return try {
+            val json = JSONObject(jsonString)
+            val idsArr = json.optJSONArray("matchingIds")
+            val filteredIds = mutableListOf<String>()
+            if (idsArr != null) {
+                for (i in 0 until idsArr.length()) {
+                    val id = idsArr.optString(i, "")
+                    if (id in validIds && id !in filteredIds) {
+                        filteredIds.add(id)
+                    }
+                }
+            }
+            val suggestedLeague = json.optString("suggestedLeague", "").takeIf { it.isNotBlank() && it != "null" }
+            val suggestedStatus = json.optString("suggestedStatus", "ALL").ifBlank { "ALL" }
+            val explanation = json.optString(
+                "aiExplanation",
+                "${filteredIds.size} match(s) sélectionné(s) par Gemini pour « $query »."
+            )
+            AiMatchSearchState.Success(
+                query = query,
+                matchingIds = filteredIds,
+                explanation = explanation,
+                suggestedLeague = suggestedLeague,
+                suggestedStatus = suggestedStatus
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse AI match search JSON", e)
+            AiMatchSearchState.Error(
+                query = query,
+                message = "Réponse JSON IA invalide : ${e.localizedMessage ?: "erreur de lecture"}"
+            )
+        }
+    }
+
+    /**
+     * Automatically filters ONLY goals and critical turning-point actions for a finished match's
+     * post-match video summary reel using Firebase AI Logic (Gemini).
+     */
+    suspend fun filterFinishedMatchHighlightsWithAI(match: Match): AiPostMatchVideoSummaryState = withContext(Dispatchers.IO) {
+        val eventsText = if (match.events.isNotEmpty()) {
+            match.events.joinToString("\n") { ev ->
+                val side = if (ev.isHomeTeam) match.homeTeam else match.awayTeam
+                "- ${ev.minute}' | ${ev.type.name} | $side | ${ev.playerName} | ${ev.detail}"
+            }
+        } else {
+            "Score final : ${match.homeTeam} ${match.homeScore} - ${match.awayScore} ${match.awayTeam} (aucun détail d'évènement individuel transmis par l'API)."
+        }
+
+        val prompt = """
+            Tu es le réalisateur vidéo IA de FootIA Live pour le résumé de fin de match.
+            Match terminé : ${match.homeTeam} ${match.homeScore} - ${match.awayScore} ${match.awayTeam} (${match.league}, ${match.stadium}, ${match.date} ${match.time}).
+            Statistiques : Possession ${match.stats.possessionHome}% - ${match.stats.possessionAway}%, Tirs ${match.stats.shotsHome} - ${match.stats.shotsAway}, Tirs cadrés ${match.stats.shotsOnTargetHome} - ${match.stats.shotsOnTargetAway}.
+
+            Évènements réels officiels du match :
+            $eventsText
+
+            Ta mission :
+            1. Filtre STRICTEMENT les buts (GOAL) et les actions importantes ayant fait basculer le match (RED_CARD, cartons jaunes décisifs YELLOW_CARD, tournant tactique KEY_ACTION).
+            2. Ignore les faits mineurs sans impact.
+            3. Attribue à chaque clip un timestampSeconds réparti entre 1 et 13 secondes (dans l'ordre chronologique des minutes) pour permettre la lecture directe dans le lecteur vidéo du résumé.
+            4. Rédige summaryHeadline (1 phrase nette en français) et clips en français sans inventer de joueurs absents des évènements.
+        """.trimIndent()
+
+        try {
+            val response = withTimeout(45_000L) {
+                postMatchSummaryModel.generateContent(prompt)
+            }
+            val jsonString = response.text?.takeIf { it.isNotBlank() }
+                ?: return@withContext AiPostMatchVideoSummaryState.Error(
+                    matchId = match.id,
+                    message = "Le modèle Gemini IA n'a renvoyé aucun résumé vidéo."
+                )
+            parsePostMatchHighlightsJson(match.id, jsonString, match)
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "AI post-match highlight filter timed out", e)
+            AiPostMatchVideoSummaryState.Error(
+                matchId = match.id,
+                message = "Délai dépassé lors de l'analyse vidéo Gemini. Appuyez sur Réessayer."
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Firebase AI post-match video summary failed", e)
+            AiPostMatchVideoSummaryState.Error(
+                matchId = match.id,
+                message = e.localizedMessage ?: "Échec du filtrage vidéo Gemini."
+            )
+        }
+    }
+
+    internal fun parsePostMatchHighlightsJson(
+        matchId: String,
+        jsonString: String,
+        match: Match
+    ): AiPostMatchVideoSummaryState {
+        return try {
+            val json = JSONObject(jsonString)
+            val headline = json.optString(
+                "summaryHeadline",
+                "Résumé vidéo : ${match.homeTeam} ${match.homeScore} - ${match.awayScore} ${match.awayTeam}"
+            ).ifBlank {
+                "Résumé vidéo : ${match.homeTeam} ${match.homeScore} - ${match.awayScore} ${match.awayTeam}"
+            }
+
+            val arr = json.optJSONArray("clips")
+            val parsed = mutableListOf<AiVideoHighlightClip>()
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val minute = obj.optInt("minute", 1).coerceIn(1, 120)
+                    val category = obj.optString("category", "KEY_ACTION").uppercase().let {
+                        if (it in setOf("GOAL", "RED_CARD", "YELLOW_CARD", "KEY_ACTION")) it else "KEY_ACTION"
+                    }
+                    val title = obj.optString("title", "").ifBlank {
+                        when (category) {
+                            "GOAL" -> "⚽ But à la ${minute}'"
+                            "RED_CARD" -> "🟥 Carton rouge (${minute}')"
+                            "YELLOW_CARD" -> "🟨 Avertissement important (${minute}')"
+                            else -> "🔥 Action décisive (${minute}')"
+                        }
+                    }
+                    val reason = obj.optString("reason", "Action clé retenue par Gemini IA")
+                    val ts = obj.optInt("timestampSeconds", ((minute * 13) / 90).coerceIn(1, 13)).coerceIn(0, 14)
+                    parsed.add(
+                        AiVideoHighlightClip(
+                            minute = minute,
+                            category = category,
+                            title = title,
+                            reason = reason,
+                            timestampSeconds = ts
+                        )
+                    )
+                }
+            }
+
+            AiPostMatchVideoSummaryState.Success(
+                matchId = matchId,
+                summaryHeadline = headline,
+                clips = parsed.sortedBy { it.minute }
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse post-match highlights JSON", e)
+            AiPostMatchVideoSummaryState.Error(
+                matchId = matchId,
+                message = "Format du résumé vidéo IA invalide : ${e.localizedMessage ?: "erreur JSON"}"
+            )
+        }
+    }
+
+    /**
+     * Generates dynamic TV commentary for a live match action in the specified language.
      */
     suspend fun generateLiveCommentary(
         match: Match,
@@ -77,7 +407,7 @@ class GeminiCommentatorRepository {
         actionPrompt: String? = null,
         languageCode: String = "fr"
     ): AICommentary = withContext(Dispatchers.IO) {
-        val lang = CommentaryLanguage.values().find { it.code == languageCode } ?: CommentaryLanguage.FRENCH
+        val lang = CommentaryLanguage.fromCode(languageCode)
 
         val prompt = if (actionPrompt != null) {
             "Tu es un commentateur télé de football professionnel et hyper passionné. Rédige ton commentaire ${lang.promptInstruction}. " +
@@ -89,7 +419,7 @@ class GeminiCommentatorRepository {
                     "Décris une action réaliste (passe en profondeur, dribble spectaculaire, arrêt reflexe du gardien, tacle glissé ou feinte)."
         }
 
-        val aiText = callGeminiApi(prompt) ?: getRandomFallbackCommentary(match, minute, actionPrompt, lang)
+        val aiText = callFirebaseAiText(prompt) ?: getRandomFallbackCommentary(match, minute, actionPrompt, lang)
 
         AICommentary(
             id = "ai_${System.currentTimeMillis()}_${Random.nextInt(1000)}",
@@ -103,69 +433,41 @@ class GeminiCommentatorRepository {
      * Generates a full match AI summary/debrief in the selected language.
      */
     suspend fun generateMatchSummary(match: Match, languageCode: String = "fr"): String = withContext(Dispatchers.IO) {
-        val lang = CommentaryLanguage.values().find { it.code == languageCode } ?: CommentaryLanguage.FRENCH
+        val lang = CommentaryLanguage.fromCode(languageCode)
 
         val prompt = "Tu es un consultant tactique de football chevronné pour 'FootIA Live'. " +
                 "Rédige un résumé/débrief synthétique et captivant ${lang.promptInstruction} pour le match ${match.homeTeam} (${match.homeScore}) - (${match.awayTeam}) (${match.awayScore}) joué au ${match.stadium} (${match.league}). " +
                 "Inclut les points clés (possession, efficacité devant le but, tournant du match, joueur clé). Structure en 3 paragraphes courts et percutants avec des émojis."
 
-        callGeminiApi(prompt) ?: getFallbackSummary(match, lang)
+        callFirebaseAiText(prompt) ?: getFallbackSummary(match, lang)
     }
 
     /**
      * Interactive chat feature with AI Commentator in the selected language.
      */
     suspend fun askCommentator(match: Match, userQuestion: String, languageCode: String = "fr"): String = withContext(Dispatchers.IO) {
-        val lang = CommentaryLanguage.values().find { it.code == languageCode } ?: CommentaryLanguage.FRENCH
+        val lang = CommentaryLanguage.fromCode(languageCode)
 
         val prompt = "Tu es le commentateur IA vedette de 'FootIA Live' pour le match ${match.homeTeam} vs ${match.awayTeam} (${match.league}). " +
                 "Score actuel: ${match.homeScore} - ${match.awayScore} (${match.minute}' min). " +
                 "Statistiques: Possession ${match.stats.possessionHome}% - ${match.stats.possessionAway}%, Tirs ${match.stats.shotsHome} - ${match.stats.shotsAway}. " +
                 "L'utilisateur te demande: '$userQuestion'. Réponds-lui comme un commentateur passionné et avisé ${lang.promptInstruction} en 2-3 phrases."
 
-        callGeminiApi(prompt) ?: getFallbackAskResponse(match, lang)
+        callFirebaseAiText(prompt) ?: getFallbackAskResponse(match, lang)
     }
 
-    private fun callGeminiApi(prompt: String): String? {
-        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") return null
-
-        try {
-            val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
-
-            val jsonBody = JSONObject().apply {
-                put("contents", JSONArray().apply {
-                    put(JSONObject().apply {
-                        put("parts", JSONArray().apply {
-                            put(JSONObject().apply { put("text", prompt) })
-                        })
-                    })
-                })
+    private suspend fun callFirebaseAiText(prompt: String): String? {
+        return try {
+            val response = withTimeout(45_000L) {
+                textModel.generateContent(prompt)
             }
-
-            val request = Request.Builder()
-                .url(url)
-                .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val responseStr = response.body?.string() ?: return null
-                    val jsonResponse = JSONObject(responseStr)
-                    val candidates = jsonResponse.optJSONArray("candidates")
-                    if (candidates != null && candidates.length() > 0) {
-                        val firstCandidate = candidates.getJSONObject(0)
-                        val content = firstCandidate.optJSONObject("content")
-                        val parts = content?.optJSONArray("parts")
-                        if (parts != null && parts.length() > 0) {
-                            return parts.getJSONObject(0).optString("text")
-                        }
-                    }
-                }
-            }
+            response.text?.takeIf { it.isNotBlank() }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Firebase AI text generation failed", e)
+            null
         }
-        return null
     }
 
     private fun getRandomFallbackCommentary(
@@ -254,5 +556,138 @@ class GeminiCommentatorRepository {
             else -> "Excellente question ! Vu la possession de ${match.homeTeam} (${match.stats.possessionHome}%), le tournant du match se jouera sur l'efficacité dans les 30 derniers mètres !"
         }
     }
-}
 
+    /**
+     * Gemini AI Analysis dedicated to processing Mercato and Transfer News
+     * cross-referencing Le Parisien, Foot Mercato and Le Monde.
+     */
+    suspend fun analyzeMercatoWithGemini(
+        items: List<MercatoNewsItem>,
+        userQuery: String? = null
+    ): String = withContext(Dispatchers.IO) {
+        val titlesSummary = items.take(8).joinToString("\n") {
+            "- [${it.source} - Fiabilité: ${it.reliabilityIndex}%] ${it.title} (Joueur/Club: ${it.playerOrClub}, Type: ${it.transferType}, Montant: ${it.estimatedFee})"
+        }
+
+        val prompt = if (!userQuery.isNullOrBlank()) {
+            """
+            Tu es l'analyste IA Mercato Football de 'FootIA Live', expert du marché des transferts européen et spécialiste des informations de Le Parisien, Foot Mercato et Le Monde.
+            
+            Voici les dernières informations et dépêches du marché des transferts :
+            $titlesSummary
+            
+            L'utilisateur te pose une question spécifique sur le mercato :
+            "$userQuery"
+            
+            Réponds de façon experte, documentée et captivante :
+            1. Réponse directe avec le statut du dossier
+            2. Confrontation des sources (Le Parisien pour le PSG/Ligue 1, Foot Mercato pour les rumeurs européennes, Le Monde pour les aspects financiers et réglementaires)
+            3. Indice de faisabilité en %
+            4. Conclusion percutante.
+            """.trimIndent()
+        } else {
+            """
+            Tu es l'analyste en chef IA Mercato de 'FootIA Live'.
+            Voici la revue de presse mercato du jour croisée entre Le Parisien, Foot Mercato et Le Monde :
+            $titlesSummary
+            
+            Génère une synthèse exclusive 'Flash Mercato Gemini' structurée avec des émojis :
+            🔥 **Synthèse des Dossiers Brûlants** (Les 3 mouvements majeurs)
+            📰 **Le Parisien & PSG** (Les coulisses exclusives parisiennes)
+            ⚡ **Foot Mercato Radar** (Les rumeurs européennes chaudes)
+            💼 **Le Monde & Économie** (L'angle financier et fair-play)
+            🔮 **Le Pronostic Transfert Gemini** (Le prochain transfert officiel)
+            
+            Sois ultra précis, incisif et professionnel.
+            """.trimIndent()
+        }
+
+        callFirebaseAiText(prompt) ?: getFallbackMercatoAnalysis(items, userQuery)
+    }
+
+    private fun getFallbackMercatoAnalysis(items: List<MercatoNewsItem>, userQuery: String?): String {
+        val liveItems = items.filter { !it.id.startsWith("mercato_offline") }
+        if (liveItems.isEmpty()) {
+            return """
+            ⚠️ **SYNTHÈSE MERCATO GEMINI**
+            
+            Aucune dépêche en direct n'a encore été chargée. Appuyez sur **Actualiser** pour synchroniser les flux RSS en direct de **Le Parisien**, **Foot Mercato** et **Le Monde**.
+            """.trimIndent()
+        }
+
+        if (!userQuery.isNullOrBlank()) {
+            val queryTokens = userQuery.lowercase()
+                .split(Regex("[^a-zàâäéèêëïîôöùûüç0-9]+"))
+                .filter { it.length >= 3 }
+
+            val matchingItems = liveItems.filter { item ->
+                val haystack = "${item.title} ${item.summary} ${item.playerOrClub} ${item.source} ${item.transferType}".lowercase()
+                queryTokens.any { token -> haystack.contains(token) }
+            }
+
+            return if (matchingItems.isNotEmpty()) {
+                val topMatches = matchingItems.take(5).joinToString("\n\n") { item ->
+                    "• **[${item.source} • ${item.publishedAt}]** ${item.title}\n" +
+                        "  ↳ Dossier : *${item.playerOrClub}* (${item.transferType} • ${item.estimatedFee} • Fiabilité ${item.reliabilityIndex}%)"
+                }
+                val avgReliability = matchingItems.map { it.reliabilityIndex }.average().toInt()
+                """
+                🔍 **Analyse Mercato Gemini : "$userQuery"**
+                
+                📌 **${matchingItems.size} dépêche(s) en direct trouvée(s) :**
+                
+                $topMatches
+                
+                💡 **Verdict IA :** Recoupement issu des flux temps réel (**indice moyen de fiabilité : $avgReliability%**). Consultez les fiches ci-dessous pour lire les articles complets.
+                """.trimIndent()
+            } else {
+                val latestTopics = liveItems.take(4).joinToString("\n") {
+                    "• [${it.source} • ${it.publishedAt}] ${it.title}"
+                }
+                """
+                🔍 **Analyse Mercato Gemini : "$userQuery"**
+                
+                ℹ️ Aucun titre récent de **Le Parisien**, **Foot Mercato** ou **Le Monde** ne mentionne directement "$userQuery" dans les dernières dépêches synchronisées.
+                
+                📰 **Tendances actuelles en direct :**
+                $latestTopics
+                """.trimIndent()
+            }
+        }
+
+        val parisien = liveItems.filter { it.source.contains("Parisien", ignoreCase = true) }.take(2)
+        val footMercato = liveItems.filter { it.source.contains("Foot Mercato", ignoreCase = true) }.take(3)
+        val leMonde = liveItems.filter { it.source.contains("Le Monde", ignoreCase = true) }.take(2)
+
+        val sb = StringBuilder()
+        sb.appendLine("🔥 **FLASH MERCATO EN DIRECT • LE PARISIEN, FOOT MERCATO & LE MONDE**")
+        sb.appendLine()
+
+        if (footMercato.isNotEmpty()) {
+            sb.appendLine("⚡ **Radar Foot Mercato (Temps Réel)**")
+            footMercato.forEach {
+                sb.appendLine("• **${it.title}** (${it.publishedAt} • ${it.transferType})")
+            }
+            sb.appendLine()
+        }
+
+        if (parisien.isNotEmpty()) {
+            sb.appendLine("📰 **Le Parisien • PSG & Ligue 1**")
+            parisien.forEach {
+                sb.appendLine("• **${it.title}** (${it.publishedAt} • Fiabilité ${it.reliabilityIndex}%)")
+            }
+            sb.appendLine()
+        }
+
+        if (leMonde.isNotEmpty()) {
+            sb.appendLine("🗞️ **Le Monde Football • Analyses & Coulisses**")
+            leMonde.forEach {
+                sb.appendLine("• **${it.title}** (${it.publishedAt} • Fiabilité ${it.reliabilityIndex}%)")
+            }
+            sb.appendLine()
+        }
+
+        sb.append("🔮 **Synthèse IA :** ${liveItems.size} dépêches en direct analysées et triées par fraîcheur.")
+        return sb.toString().trim()
+    }
+}

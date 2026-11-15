@@ -123,7 +123,12 @@ fun PublicMatchChat(
             )
             messages = messages + newMsg
             onlineCount += (-3..5).random()
-            listState.animateScrollToItem(messages.size - 1)
+            if (messages.isNotEmpty()) {
+                try {
+                    listState.animateScrollToItem(messages.size - 1)
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
@@ -198,22 +203,25 @@ fun PublicMatchChat(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Select team tag for user
-                Row(
+                // Select team tag for user (horizontally scrollable)
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        text = "Mon équipe :",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    listOf(match.homeTeam, match.awayTeam, "Neutre").forEach { team ->
+                    item {
+                        Text(
+                            text = "Mon équipe :",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    items(listOf(match.homeTeam, match.awayTeam, "Neutre").distinct()) { team ->
                         FilterChip(
                             selected = selectedTeamAffiliation == team,
                             onClick = { selectedTeamAffiliation = team },
-                            label = { Text(team, fontSize = 10.sp) },
+                            label = { Text(team, fontSize = 10.sp, maxLines = 1) },
                             modifier = Modifier.height(28.dp)
                         )
                     }
